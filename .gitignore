@@ -7,6 +7,7 @@ __pycache__/
 
 /data/
 /datasets/
+/all-data/
 output/
 outputs/
 log/
