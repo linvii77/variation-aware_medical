@@ -1,4 +1,4 @@
-"""End-to-end VAPL model using PIDNet-M as the segmentation backbone."""
+"""End-to-end VAPL models using segmentation backbones."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .models import PIDNet, pidnet_m
+from .models import PIDNet, SCDLVNet3D, pidnet_m, scdl_vnet_3d
 from .vapl import CompositionalSimilarityLoss, ProjectionHead, SoftmaxScope
 
 
@@ -173,6 +173,172 @@ def build_vapl_pidnet_m(
 
     return VAPLPIDNetM(
         num_classes=num_classes,
+        embedding_dim=embedding_dim,
+        lambda_cs=lambda_cs,
+        ignore_index=ignore_index,
+    )
+
+
+class VAPLSCDL3D(nn.Module):
+    """3D SCDL-style medical backbone with VAPL training loss.
+
+    This wrapper is the 3D counterpart of ``VAPLPIDNetM``. It keeps the same
+    output dictionary contract but expects volumes shaped ``[B, C, D, H, W]``
+    and targets shaped ``[B, D, H, W]`` or ``[B, 1, D, H, W]``.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 14,
+        in_channels: int = 1,
+        base_channels: int = 16,
+        embedding_dim: int = 256,
+        lambda_cs: float = 1.0,
+        ignore_index: int = 255,
+        num_variations: int = 5,
+        lambda_var: float = 1.0,
+        tau: float = 10.0,
+        gamma: float = 2.0,
+        tau_r: float = 0.8,
+        lambda_r: float = 1.0,
+        softmax_scope: SoftmaxScope = "per_class",
+    ) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.lambda_cs = lambda_cs
+        self.ignore_index = ignore_index
+
+        self.backbone: SCDLVNet3D = scdl_vnet_3d(
+            in_channels=in_channels,
+            num_classes=num_classes,
+            base_channels=base_channels,
+        )
+        self.projection_head = ProjectionHead(
+            in_channels=self.backbone.feature_channels,
+            embedding_dim=embedding_dim,
+            spatial_dims=3,
+        )
+        self.cs_loss = CompositionalSimilarityLoss(
+            num_classes=num_classes,
+            embedding_dim=embedding_dim,
+            num_variations=num_variations,
+            lambda_var=lambda_var,
+            tau=tau,
+            gamma=gamma,
+            tau_r=tau_r,
+            lambda_r=lambda_r,
+            ignore_index=ignore_index,
+            softmax_scope=softmax_scope,
+        )
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        return_embeddings: bool = False,
+    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor] | None]:
+        scdl_out = self.backbone(images)
+
+        logits_raw = scdl_out["logits"]
+        logits = self._upsample_logits_3d(
+            logits_raw,
+            targets.shape[-3:] if targets is not None else images.shape[-3:],
+        )
+
+        outputs: dict[str, torch.Tensor | dict[str, torch.Tensor] | None] = {
+            "logits": logits,
+            "logits_lowres": logits_raw,
+            "features": scdl_out["features"],
+            "aux_logits_p": None,
+            "aux_logits_d": None,
+            "embeddings": None,
+            "losses": None,
+        }
+
+        if targets is None and not return_embeddings:
+            return outputs
+
+        embeddings = None
+        if self.lambda_cs > 0.0 or return_embeddings:
+            embeddings = self.projection_head(scdl_out["features"])
+            outputs["embeddings"] = embeddings
+
+        if targets is None:
+            return outputs
+
+        targets_4d = self._targets_4d(targets)
+        loss_seg = F.cross_entropy(
+            logits,
+            targets_4d.long(),
+            ignore_index=self.ignore_index,
+        )
+
+        if self.lambda_cs > 0.0:
+            if embeddings is None:
+                raise RuntimeError("VAPL embeddings were not computed.")
+            loss_cs, stats = self.cs_loss(embeddings, targets_4d)
+            stats_dict = vars(stats)
+        else:
+            loss_cs = logits.new_zeros(())
+            stats_dict = {
+                "loss_cs": loss_cs,
+                "loss_attraction": loss_cs,
+                "loss_repulsion": loss_cs,
+                "positive_probability": loss_cs.detach(),
+                "negative_probability": loss_cs.detach(),
+                "hard_fraction": loss_cs.detach(),
+                "valid_pixels": loss_cs.detach(),
+            }
+
+        total_loss = loss_seg + self.lambda_cs * loss_cs
+        losses = {
+            "loss_total": total_loss,
+            "loss_seg": loss_seg,
+            "loss_aux_p": logits.new_zeros(()),
+            "loss_cs": loss_cs,
+        }
+        losses.update(stats_dict)
+        outputs["losses"] = losses
+        return outputs
+
+    @staticmethod
+    def _upsample_logits_3d(
+        logits: torch.Tensor | None, size: tuple[int, int, int]
+    ) -> torch.Tensor | None:
+        if logits is None:
+            return None
+        if logits.shape[-3:] == size:
+            return logits
+        return F.interpolate(
+            logits,
+            size=size,
+            mode="trilinear",
+            align_corners=False,
+        )
+
+    @staticmethod
+    def _targets_4d(targets: torch.Tensor) -> torch.Tensor:
+        if targets.ndim == 5 and targets.shape[1] == 1:
+            return targets[:, 0]
+        if targets.ndim != 4:
+            raise ValueError("targets must have shape [B, D, H, W] or [B, 1, D, H, W].")
+        return targets
+
+
+def build_vapl_scdl_3d(
+    num_classes: int = 14,
+    in_channels: int = 1,
+    base_channels: int = 16,
+    embedding_dim: int = 256,
+    lambda_cs: float = 1.0,
+    ignore_index: int = 255,
+) -> VAPLSCDL3D:
+    """Build the 3D SCDL-style medical backbone with VAPL loss."""
+
+    return VAPLSCDL3D(
+        num_classes=num_classes,
+        in_channels=in_channels,
+        base_channels=base_channels,
         embedding_dim=embedding_dim,
         lambda_cs=lambda_cs,
         ignore_index=ignore_index,

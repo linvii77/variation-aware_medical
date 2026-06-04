@@ -31,14 +31,19 @@ class ProjectionHead(nn.Module):
         in_channels: int,
         embedding_dim: int = 256,
         hidden_channels: int | None = None,
+        spatial_dims: int = 2,
     ) -> None:
         super().__init__()
+        if spatial_dims not in {2, 3}:
+            raise ValueError("spatial_dims must be 2 or 3.")
         hidden_channels = hidden_channels or embedding_dim
+        conv = nn.Conv3d if spatial_dims == 3 else nn.Conv2d
+        norm = nn.BatchNorm3d if spatial_dims == 3 else nn.BatchNorm2d
         self.proj = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(hidden_channels),
+            conv(in_channels, hidden_channels, kernel_size=1, bias=False),
+            norm(hidden_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_channels, embedding_dim, kernel_size=1, bias=True),
+            conv(hidden_channels, embedding_dim, kernel_size=1, bias=True),
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
@@ -116,15 +121,15 @@ class CompositionalSimilarityLoss(nn.Module):
     def forward(
         self, embeddings: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, VAPLStats]:
-        if embeddings.ndim != 4:
-            raise ValueError("embeddings must have shape [B, D, H, W].")
+        if embeddings.ndim not in {4, 5}:
+            raise ValueError("embeddings must have shape [B, D, H, W] or [B, D, Z, H, W].")
         if embeddings.shape[1] != self.embedding_dim:
             raise ValueError(
                 f"expected embedding dim {self.embedding_dim}, "
                 f"got {embeddings.shape[1]}"
             )
 
-        targets = self._resize_targets(targets, embeddings.shape[-2:])
+        targets = self._resize_targets(targets, embeddings.shape[2:])
         flat_embeddings, flat_targets = self._flatten_valid(embeddings, targets)
 
         if flat_embeddings.numel() == 0:
@@ -174,13 +179,16 @@ class CompositionalSimilarityLoss(nn.Module):
         return loss_cs, stats
 
     def _resize_targets(
-        self, targets: torch.Tensor, size: tuple[int, int]
+        self, targets: torch.Tensor, size: tuple[int, ...]
     ) -> torch.Tensor:
-        if targets.ndim == 4 and targets.shape[1] == 1:
+        if targets.ndim in {4, 5} and targets.shape[1] == 1:
             targets = targets[:, 0]
-        if targets.ndim != 3:
-            raise ValueError("targets must have shape [B, H, W] or [B, 1, H, W].")
-        if targets.shape[-2:] == size:
+        expected_ndim = len(size) + 1
+        if targets.ndim != expected_ndim:
+            raise ValueError(
+                "targets must have shape [B, ...] or [B, 1, ...] matching embeddings."
+            )
+        if targets.shape[1:] == size:
             return targets.long()
         resized = F.interpolate(
             targets.unsqueeze(1).float(), size=size, mode="nearest"
@@ -190,7 +198,7 @@ class CompositionalSimilarityLoss(nn.Module):
     def _flatten_valid(
         self, embeddings: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        flat_embeddings = embeddings.permute(0, 2, 3, 1).reshape(-1, embeddings.shape[1])
+        flat_embeddings = embeddings.movedim(1, -1).reshape(-1, embeddings.shape[1])
         flat_targets = targets.reshape(-1)
         valid = (
             (flat_targets != self.ignore_index)
