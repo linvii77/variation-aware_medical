@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--num-classes", type=int, default=None)
     parser.add_argument("--patch-size", type=int, nargs=3, default=(96, 96, 96))
+    parser.add_argument("--foreground-prob", type=float, default=0.75)
+    parser.add_argument("--foreground-margin", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--max-iters", type=int, default=1000)
@@ -65,6 +67,8 @@ def main() -> None:
         split_file=args.split_file,
         patch_size=tuple(args.patch_size),
         train=True,
+        foreground_prob=args.foreground_prob,
+        foreground_margin=args.foreground_margin,
     )
     loader = DataLoader(
         dataset,
@@ -125,6 +129,7 @@ def main() -> None:
                         f"dataset={args.dataset}",
                         f"case={batch['case_id'][0]}",
                         f"image={tuple(images.shape)}",
+                        f"fg={(targets > 0).float().mean().item():.4f}",
                         f"logits={tuple(outputs['logits'].shape)}",
                         f"loss={loss.item():.4f}",
                         f"seg={losses['loss_seg'].item():.4f}",

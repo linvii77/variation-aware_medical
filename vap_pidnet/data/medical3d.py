@@ -62,6 +62,8 @@ class MedicalVolumeDataset(Dataset):
         train: bool = True,
         random_flip: bool = True,
         random_rotate: bool = True,
+        foreground_prob: float = 0.75,
+        foreground_margin: int = 4,
     ) -> None:
         self.root = Path(root)
         self.dataset = dataset
@@ -70,6 +72,10 @@ class MedicalVolumeDataset(Dataset):
         self.train = train
         self.random_flip = random_flip
         self.random_rotate = random_rotate
+        if not 0.0 <= foreground_prob <= 1.0:
+            raise ValueError("foreground_prob must be in [0, 1].")
+        self.foreground_prob = foreground_prob
+        self.foreground_margin = foreground_margin
 
         if dataset not in {"synapse", "amos"}:
             raise ValueError("dataset must be 'synapse' or 'amos'.")
@@ -82,7 +88,13 @@ class MedicalVolumeDataset(Dataset):
         image, target, case_id = self._load_case(entry)
 
         if self.train:
-            image, target = random_crop_3d(image, target, self.patch_size)
+            image, target = random_crop_3d(
+                image,
+                target,
+                self.patch_size,
+                foreground_prob=self.foreground_prob,
+                foreground_margin=self.foreground_margin,
+            )
             if self.random_rotate:
                 image, target = random_rot90_flip_3d(image, target)
             elif self.random_flip:
@@ -142,14 +154,47 @@ def random_crop_3d(
     image: np.ndarray,
     target: np.ndarray,
     patch_size: tuple[int, int, int],
+    foreground_prob: float = 0.0,
+    foreground_margin: int = 4,
 ) -> tuple[np.ndarray, np.ndarray]:
     image, target = pad_to_patch(image, target, patch_size)
-    starts = [
-        random.randint(0, dim - size) if dim > size else 0
-        for dim, size in zip(image.shape, patch_size)
-    ]
+    starts = None
+    if foreground_prob > 0.0 and random.random() < foreground_prob:
+        starts = foreground_crop_starts(target, patch_size, foreground_margin)
+    if starts is None:
+        starts = [
+            random.randint(0, dim - size) if dim > size else 0
+            for dim, size in zip(image.shape, patch_size)
+        ]
     slices = tuple(slice(start, start + size) for start, size in zip(starts, patch_size))
     return image[slices], target[slices]
+
+
+def foreground_crop_starts(
+    target: np.ndarray,
+    patch_size: tuple[int, int, int],
+    margin: int = 4,
+) -> list[int] | None:
+    foreground = np.argwhere(target > 0)
+    if foreground.size == 0:
+        return None
+
+    center = foreground[random.randrange(len(foreground))]
+    starts = []
+    for axis, (coord, dim, size) in enumerate(zip(center, target.shape, patch_size)):
+        max_start = max(dim - size, 0)
+        if max_start == 0:
+            starts.append(0)
+            continue
+
+        low = max(int(coord) - size + 1 + margin, 0)
+        high = min(int(coord) - margin, max_start)
+        if low > high:
+            start = min(max(int(coord) - size // 2, 0), max_start)
+        else:
+            start = random.randint(low, high)
+        starts.append(start)
+    return starts
 
 
 def center_crop_3d(
