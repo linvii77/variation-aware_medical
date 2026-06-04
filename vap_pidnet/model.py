@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .models import PIDNet, SCDLVNet3D, pidnet_m, scdl_vnet_3d
+from .scdl import SemanticClassDistributionLoss
 from .vapl import CompositionalSimilarityLoss, ProjectionHead, SoftmaxScope
 
 
@@ -194,6 +195,7 @@ class VAPLSCDL3D(nn.Module):
         base_channels: int = 16,
         embedding_dim: int = 256,
         lambda_cs: float = 1.0,
+        lambda_scdl: float = 0.0,
         ignore_index: int = 255,
         num_variations: int = 5,
         lambda_var: float = 1.0,
@@ -206,6 +208,7 @@ class VAPLSCDL3D(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.lambda_cs = lambda_cs
+        self.lambda_scdl = lambda_scdl
         self.ignore_index = ignore_index
 
         self.backbone: SCDLVNet3D = scdl_vnet_3d(
@@ -230,6 +233,12 @@ class VAPLSCDL3D(nn.Module):
             ignore_index=ignore_index,
             softmax_scope=softmax_scope,
         )
+        self.scdl_loss = SemanticClassDistributionLoss(
+            in_channels=self.backbone.feature_channels,
+            num_classes=num_classes,
+            embedding_dim=embedding_dim,
+            ignore_index=ignore_index,
+        )
 
     def forward(
         self,
@@ -252,6 +261,7 @@ class VAPLSCDL3D(nn.Module):
             "aux_logits_p": None,
             "aux_logits_d": None,
             "embeddings": None,
+            "scdl_prior": None,
             "losses": None,
         }
 
@@ -290,14 +300,34 @@ class VAPLSCDL3D(nn.Module):
                 "valid_pixels": loss_cs.detach(),
             }
 
+        if self.lambda_scdl > 0.0:
+            loss_scdl, scdl_prior, scdl_stats = self.scdl_loss(
+                scdl_out["features"], targets_4d
+            )
+            outputs["scdl_prior"] = scdl_prior
+            scdl_stats_dict = vars(scdl_stats)
+        else:
+            loss_scdl = logits.new_zeros(())
+            scdl_stats_dict = {
+                "loss_scdl": loss_scdl,
+                "loss_scdl_align": loss_scdl,
+                "loss_scdl_proxy": loss_scdl,
+                "loss_scdl_anchor": loss_scdl,
+                "scdl_true_probability": loss_scdl.detach(),
+                "scdl_valid_tokens": loss_scdl.detach(),
+            }
+
         total_loss = loss_seg + self.lambda_cs * loss_cs
+        total_loss = total_loss + self.lambda_scdl * loss_scdl
         losses = {
             "loss_total": total_loss,
             "loss_seg": loss_seg,
             "loss_aux_p": logits.new_zeros(()),
             "loss_cs": loss_cs,
+            "loss_scdl": loss_scdl,
         }
         losses.update(stats_dict)
+        losses.update(scdl_stats_dict)
         outputs["losses"] = losses
         return outputs
 
@@ -331,6 +361,7 @@ def build_vapl_scdl_3d(
     base_channels: int = 16,
     embedding_dim: int = 256,
     lambda_cs: float = 1.0,
+    lambda_scdl: float = 0.0,
     ignore_index: int = 255,
 ) -> VAPLSCDL3D:
     """Build the 3D SCDL-style medical backbone with VAPL loss."""
@@ -341,5 +372,6 @@ def build_vapl_scdl_3d(
         base_channels=base_channels,
         embedding_dim=embedding_dim,
         lambda_cs=lambda_cs,
+        lambda_scdl=lambda_scdl,
         ignore_index=ignore_index,
     )

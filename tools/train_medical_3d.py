@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-channels", type=int, default=16)
     parser.add_argument("--embedding-dim", type=int, default=256)
     parser.add_argument("--lambda-cs", type=float, default=1.0)
+    parser.add_argument("--lambda-scdl", type=float, default=0.0)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--save-interval", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
@@ -85,6 +86,7 @@ def main() -> None:
         base_channels=args.base_channels,
         embedding_dim=args.embedding_dim,
         lambda_cs=args.lambda_cs,
+        lambda_scdl=args.lambda_scdl,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -134,6 +136,7 @@ def main() -> None:
                         f"loss={loss.item():.4f}",
                         f"seg={losses['loss_seg'].item():.4f}",
                         f"cs={losses['loss_cs'].item():.4f}",
+                        f"scdl={losses['loss_scdl'].item():.4f}",
                         f"hard={losses['hard_fraction'].item():.4f}",
                         f"time={elapsed:.1f}s",
                     ]
