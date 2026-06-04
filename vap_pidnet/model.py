@@ -85,8 +85,10 @@ class VAPLPIDNetM(nn.Module):
         if targets is None and not return_embeddings:
             return outputs
 
-        embeddings = self.projection_head(pid_out["features"])
-        outputs["embeddings"] = embeddings
+        embeddings = None
+        if self.lambda_cs > 0.0 or return_embeddings:
+            embeddings = self.projection_head(pid_out["features"])
+            outputs["embeddings"] = embeddings
 
         if targets is None:
             return outputs
@@ -108,7 +110,22 @@ class VAPLPIDNetM(nn.Module):
                 ignore_index=self.ignore_index,
             )
 
-        loss_cs, stats = self.cs_loss(embeddings, targets_3d)
+        if self.lambda_cs > 0.0:
+            if embeddings is None:
+                raise RuntimeError("VAPL embeddings were not computed.")
+            loss_cs, stats = self.cs_loss(embeddings, targets_3d)
+            stats_dict = vars(stats)
+        else:
+            loss_cs = logits.new_zeros(())
+            stats_dict = {
+                "loss_cs": loss_cs,
+                "loss_attraction": loss_cs,
+                "loss_repulsion": loss_cs,
+                "positive_probability": loss_cs.detach(),
+                "negative_probability": loss_cs.detach(),
+                "hard_fraction": loss_cs.detach(),
+                "valid_pixels": loss_cs.detach(),
+            }
         total_loss = loss_seg + self.aux_loss_weight * loss_aux
         total_loss = total_loss + self.lambda_cs * loss_cs
 
@@ -118,7 +135,7 @@ class VAPLPIDNetM(nn.Module):
             "loss_aux_p": loss_aux,
             "loss_cs": loss_cs,
         }
-        losses.update(vars(stats))
+        losses.update(stats_dict)
         outputs["losses"] = losses
         return outputs
 

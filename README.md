@@ -37,6 +37,58 @@ lambda_cs = 1.0
 python examples/sanity_check.py
 ```
 
+## Stage 1: Cityscapes PIDNet-M Baseline vs VAPL
+
+Cityscapes data is not bundled with this repo. Put the official dataset in this
+layout:
+
+```text
+/path/to/cityscapes/
+  leftImg8bit/
+    train/<city>/*_leftImg8bit.png
+    val/<city>/*_leftImg8bit.png
+  gtFine/
+    train/<city>/*_gtFine_labelIds.png
+    val/<city>/*_gtFine_labelIds.png
+```
+
+If `*_gtFine_labelTrainIds.png` files are present, the loader uses them.
+Otherwise it maps official `labelIds` to the standard 19 Cityscapes train IDs.
+
+Run the PIDNet-M baseline:
+
+```bash
+python tools/train_cityscapes.py \
+  --data-root /path/to/cityscapes \
+  --mode baseline \
+  --max-iters 120000 \
+  --batch-size 2 \
+  --crop-size 1024 1024
+```
+
+Run PIDNet-M + the paper's VAPL loss:
+
+```bash
+python tools/train_cityscapes.py \
+  --data-root /path/to/cityscapes \
+  --mode vapl \
+  --max-iters 120000 \
+  --batch-size 2 \
+  --crop-size 1024 1024
+```
+
+For a quick wiring check before full training:
+
+```bash
+python tools/train_cityscapes.py \
+  --data-root /path/to/cityscapes \
+  --mode vapl \
+  --max-iters 10 \
+  --eval-interval 10 \
+  --batch-size 2 \
+  --crop-size 512 512
+```
+
 ## Basic usage
 
 ```python
