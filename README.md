@@ -171,6 +171,30 @@ scdl      lambda_cs=0, lambda_scdl=1
 combined  lambda_cs=1, lambda_scdl=1
 ```
 
+Generate the four ablation commands without launching training:
+
+```bash
+python tools/run_medical_ablation.py \
+  --dataset synapse \
+  --patch-size 96 96 96 \
+  --max-iters 1000
+```
+
+Add `--run` only when you intentionally want to execute the generated commands.
+For a tiny smoke test, restrict the modes and iteration count:
+
+```bash
+python tools/run_medical_ablation.py \
+  --dataset synapse \
+  --modes ce vapl \
+  --patch-size 32 32 32 \
+  --base-channels 4 \
+  --embedding-dim 32 \
+  --max-iters 1 \
+  --eval-interval 1 \
+  --max-val-batches 1
+```
+
 AMOS uses 16 classes by default:
 
 ```bash
