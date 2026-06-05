@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--no-eval", action="store_true")
+    parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument(
         "--run",
         action="store_true",
@@ -120,6 +121,8 @@ def build_command(args: argparse.Namespace, mode: str) -> list[str]:
         command.extend(["--eval-stride", *map(str, args.eval_stride)])
     if args.max_val_batches is not None:
         command.extend(["--max-val-batches", str(args.max_val_batches)])
+    if args.resume is not None:
+        command.extend(["--resume", str(args.resume)])
     if args.amp:
         command.append("--amp")
     if args.no_eval:

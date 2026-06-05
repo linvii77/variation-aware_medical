@@ -195,6 +195,15 @@ python tools/run_medical_ablation.py \
   --max-val-batches 1
 ```
 
+Resume an interrupted run from a checkpoint:
+
+```bash
+python tools/train_medical_3d.py \
+  --dataset synapse \
+  --mode combined \
+  --resume outputs/synapse_scdl3d_combined/checkpoint_001000.pth
+```
+
 AMOS uses 16 classes by default:
 
 ```bash

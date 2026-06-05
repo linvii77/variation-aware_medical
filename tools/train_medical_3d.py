@@ -66,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--no-eval", action="store_true")
+    parser.add_argument("--resume", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -127,13 +128,16 @@ def main() -> None:
         weight_decay=args.weight_decay,
     )
     scaler = GradScaler(enabled=args.amp and device.type == "cuda")
+    start_iter = 0
+    best_dice = 0.0
+    if args.resume is not None:
+        start_iter, best_dice = load_checkpoint(args.resume, model, optimizer, scaler)
 
     train_iter = iter(loader)
     model.train()
     start_time = time.time()
-    best_dice = 0.0
 
-    for iteration in range(args.max_iters):
+    for iteration in range(start_iter, args.max_iters):
         try:
             batch = next(train_iter)
         except StopIteration:
@@ -184,6 +188,7 @@ def main() -> None:
                 args.output_dir / f"checkpoint_{step:06d}.pth",
                 model,
                 optimizer,
+                scaler,
                 step,
                 best_dice,
                 args,
@@ -213,6 +218,7 @@ def main() -> None:
                     args.output_dir / "best_dice.pth",
                     model,
                     optimizer,
+                    scaler,
                     step,
                     best_dice,
                     args,
@@ -263,6 +269,7 @@ def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
     iteration: int,
     best_dice: float,
     args: argparse.Namespace,
@@ -270,11 +277,30 @@ def save_checkpoint(
     payload = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
         "iteration": iteration,
         "best_dice": best_dice,
         "args": vars(args),
     }
     torch.save(payload, path)
+
+
+def load_checkpoint(
+    path: Path,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler,
+) -> tuple[int, float]:
+    checkpoint = torch.load(path, map_location="cpu")
+    model.load_state_dict(checkpoint["model"])
+    if "optimizer" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer"])
+    if "scaler" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler"])
+    start_iter = int(checkpoint.get("iteration", 0))
+    best_dice = float(checkpoint.get("best_dice", 0.0))
+    print(f"resumed from {path} at iter={start_iter} best_dice={best_dice:.4f}", flush=True)
+    return start_iter, best_dice
 
 
 @torch.no_grad()
