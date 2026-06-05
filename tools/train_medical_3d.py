@@ -26,6 +26,7 @@ from vap_pidnet.data import (
     SYNAPSE_NUM_CLASSES_DHC,
     MedicalVolumeDataset,
 )
+from vap_pidnet.metrics import DiceHD95
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,12 +40,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--split-file", type=Path, default=None)
+    parser.add_argument("--val-split-file", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--num-classes", type=int, default=None)
     parser.add_argument("--patch-size", type=int, nargs=3, default=(96, 96, 96))
     parser.add_argument("--foreground-prob", type=float, default=0.75)
     parser.add_argument("--foreground-margin", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--val-batch-size", type=int, default=1)
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--max-iters", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1.0e-3)
@@ -54,9 +57,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-cs", type=float, default=None)
     parser.add_argument("--lambda-scdl", type=float, default=None)
     parser.add_argument("--log-interval", type=int, default=10)
+    parser.add_argument("--eval-interval", type=int, default=500)
     parser.add_argument("--save-interval", type=int, default=500)
+    parser.add_argument("--max-val-batches", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--amp", action="store_true")
+    parser.add_argument("--no-eval", action="store_true")
     return parser.parse_args()
 
 
@@ -85,6 +91,23 @@ def main() -> None:
         pin_memory=device.type == "cuda",
         drop_last=False,
     )
+    val_loader = None
+    if not args.no_eval:
+        val_dataset = MedicalVolumeDataset(
+            root=args.data_root,
+            dataset=args.dataset,
+            split_file=args.val_split_file,
+            patch_size=tuple(args.patch_size),
+            train=False,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.val_batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=device.type == "cuda",
+            drop_last=False,
+        )
 
     model = build_vapl_scdl_3d(
         num_classes=args.num_classes,
@@ -104,6 +127,7 @@ def main() -> None:
     train_iter = iter(loader)
     model.train()
     start_time = time.time()
+    best_dice = 0.0
 
     for iteration in range(args.max_iters):
         try:
@@ -152,7 +176,41 @@ def main() -> None:
             )
 
         if step % args.save_interval == 0 or step == args.max_iters:
-            save_checkpoint(args.output_dir / f"checkpoint_{step:06d}.pth", model, optimizer, step, args)
+            save_checkpoint(
+                args.output_dir / f"checkpoint_{step:06d}.pth",
+                model,
+                optimizer,
+                step,
+                best_dice,
+                args,
+            )
+
+        if val_loader is not None and (step % args.eval_interval == 0 or step == args.max_iters):
+            metrics = evaluate(
+                model,
+                val_loader,
+                device,
+                args.num_classes,
+                max_batches=args.max_val_batches,
+            )
+            mean_dice = float(metrics["mean_dice"])
+            mean_hd95 = float(metrics["mean_hd95"])
+            print(
+                f"eval iter={step} mode={args.mode} "
+                f"mean_dice={mean_dice:.4f} mean_hd95={mean_hd95:.4f}",
+                flush=True,
+            )
+            if mean_dice > best_dice:
+                best_dice = mean_dice
+                save_checkpoint(
+                    args.output_dir / "best_dice.pth",
+                    model,
+                    optimizer,
+                    step,
+                    best_dice,
+                    args,
+                )
+            model.train()
 
 
 def fill_defaults(args: argparse.Namespace) -> None:
@@ -173,10 +231,12 @@ def fill_defaults(args: argparse.Namespace) -> None:
         args.num_classes = args.num_classes or SYNAPSE_NUM_CLASSES_DHC
         args.data_root = args.data_root or data_root / "Synapse"
         args.split_file = args.split_file or data_root / "lists_Synapse_DHC" / "train_cases.txt"
+        args.val_split_file = args.val_split_file or data_root / "lists_Synapse_DHC" / "val_cases.txt"
     else:
         args.num_classes = args.num_classes or AMOS_NUM_CLASSES
         args.data_root = args.data_root or data_root / "AMOS"
         args.split_file = args.split_file or data_root / "amos_splits" / "train.txt"
+        args.val_split_file = args.val_split_file or data_root / "amos_splits" / "eval.txt"
 
     if args.output_dir is None:
         args.output_dir = ROOT / "outputs" / f"{args.dataset}_scdl3d_{args.mode}"
@@ -195,15 +255,38 @@ def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     iteration: int,
+    best_dice: float,
     args: argparse.Namespace,
 ) -> None:
     payload = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "iteration": iteration,
+        "best_dice": best_dice,
         "args": vars(args),
     }
     torch.save(payload, path)
+
+
+@torch.no_grad()
+def evaluate(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    num_classes: int,
+    max_batches: int | None = None,
+) -> dict[str, torch.Tensor]:
+    model.eval()
+    metric = DiceHD95(num_classes=num_classes)
+    for batch_index, batch in enumerate(loader):
+        if max_batches is not None and batch_index >= max_batches:
+            break
+        images = batch["image"].to(device, non_blocking=True)
+        targets = batch["target"].to(device, non_blocking=True)
+        logits = model(images)["logits"]
+        preds = logits.argmax(dim=1)
+        metric.update(preds, targets)
+    return metric.compute()
 
 
 if __name__ == "__main__":
