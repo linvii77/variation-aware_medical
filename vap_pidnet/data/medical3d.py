@@ -64,6 +64,7 @@ class MedicalVolumeDataset(Dataset):
         random_rotate: bool = True,
         foreground_prob: float = 0.75,
         foreground_margin: int = 4,
+        full_volume: bool = False,
     ) -> None:
         self.root = Path(root)
         self.dataset = dataset
@@ -72,6 +73,7 @@ class MedicalVolumeDataset(Dataset):
         self.train = train
         self.random_flip = random_flip
         self.random_rotate = random_rotate
+        self.full_volume = full_volume
         if not 0.0 <= foreground_prob <= 1.0:
             raise ValueError("foreground_prob must be in [0, 1].")
         self.foreground_prob = foreground_prob
@@ -99,7 +101,7 @@ class MedicalVolumeDataset(Dataset):
                 image, target = random_rot90_flip_3d(image, target)
             elif self.random_flip:
                 image, target = random_flip_3d(image, target)
-        else:
+        elif not self.full_volume:
             image, target = center_crop_3d(image, target, self.patch_size)
 
         image = np.ascontiguousarray(image[None].astype(np.float32))

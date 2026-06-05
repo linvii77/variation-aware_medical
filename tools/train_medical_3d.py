@@ -26,6 +26,7 @@ from vap_pidnet.data import (
     SYNAPSE_NUM_CLASSES_DHC,
     MedicalVolumeDataset,
 )
+from vap_pidnet.infer import sliding_window_logits_3d
 from vap_pidnet.metrics import DiceHD95
 
 
@@ -57,7 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-cs", type=float, default=None)
     parser.add_argument("--lambda-scdl", type=float, default=None)
     parser.add_argument("--log-interval", type=int, default=10)
+    parser.add_argument("--eval-mode", choices=["patch", "full"], default="patch")
     parser.add_argument("--eval-interval", type=int, default=500)
+    parser.add_argument("--eval-stride", type=int, nargs=3, default=None)
     parser.add_argument("--save-interval", type=int, default=500)
     parser.add_argument("--max-val-batches", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -99,6 +102,7 @@ def main() -> None:
             split_file=args.val_split_file,
             patch_size=tuple(args.patch_size),
             train=False,
+            full_volume=args.eval_mode == "full",
         )
         val_loader = DataLoader(
             val_dataset,
@@ -191,6 +195,9 @@ def main() -> None:
                 val_loader,
                 device,
                 args.num_classes,
+                patch_size=tuple(args.patch_size),
+                stride=tuple(args.eval_stride),
+                eval_mode=args.eval_mode,
                 max_batches=args.max_val_batches,
             )
             mean_dice = float(metrics["mean_dice"])
@@ -240,6 +247,8 @@ def fill_defaults(args: argparse.Namespace) -> None:
 
     if args.output_dir is None:
         args.output_dir = ROOT / "outputs" / f"{args.dataset}_scdl3d_{args.mode}"
+    if args.eval_stride is None:
+        args.eval_stride = tuple(max(1, size // 2) for size in args.patch_size)
 
 
 def set_seed(seed: int) -> None:
@@ -274,6 +283,9 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     num_classes: int,
+    patch_size: tuple[int, int, int],
+    stride: tuple[int, int, int],
+    eval_mode: str,
     max_batches: int | None = None,
 ) -> dict[str, torch.Tensor]:
     model.eval()
@@ -283,8 +295,21 @@ def evaluate(
             break
         images = batch["image"].to(device, non_blocking=True)
         targets = batch["target"].to(device, non_blocking=True)
-        logits = model(images)["logits"]
-        preds = logits.argmax(dim=1)
+        if eval_mode == "full":
+            if images.shape[0] != 1:
+                raise ValueError("full eval currently requires val-batch-size=1.")
+            logits = sliding_window_logits_3d(
+                model,
+                images[0],
+                num_classes=num_classes,
+                patch_size=patch_size,
+                stride=stride,
+                device=device,
+            )
+            preds = logits.argmax(dim=0, keepdim=True)
+        else:
+            logits = model(images)["logits"]
+            preds = logits.argmax(dim=1)
         metric.update(preds, targets)
     return metric.compute()
 

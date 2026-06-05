@@ -138,6 +138,30 @@ python tools/train_medical_3d.py \
   --foreground-prob 1.0
 ```
 
+Validation modes:
+
+```text
+patch  center-crop patch validation for quick training feedback
+full   full-volume sliding-window validation for final-style metrics
+```
+
+Use `full` only for short checks or formal evaluation, because it is much
+slower than patch validation:
+
+```bash
+python tools/train_medical_3d.py \
+  --dataset synapse \
+  --mode ce \
+  --patch-size 32 32 32 \
+  --eval-mode full \
+  --eval-stride 32 32 32 \
+  --max-iters 1 \
+  --eval-interval 1 \
+  --max-val-batches 1 \
+  --base-channels 4 \
+  --embedding-dim 32
+```
+
 Ablation modes:
 
 ```text
