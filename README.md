@@ -180,6 +180,13 @@ python tools/run_medical_ablation.py \
   --max-iters 1000
 ```
 
+Or load a JSON config:
+
+```bash
+python tools/run_medical_ablation.py \
+  --config configs/synapse_ablation_smoke.json
+```
+
 Add `--run` only when you intentionally want to execute the generated commands.
 For a tiny smoke test, restrict the modes and iteration count:
 

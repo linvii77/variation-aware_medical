@@ -1,0 +1,19 @@
+{
+  "dataset": "synapse",
+  "modes": ["ce", "vapl", "scdl", "combined"],
+  "patch_size": [32, 32, 32],
+  "foreground_prob": 1.0,
+  "batch_size": 1,
+  "val_batch_size": 1,
+  "workers": 0,
+  "max_iters": 1,
+  "lr": 0.001,
+  "weight_decay": 0.00001,
+  "base_channels": 4,
+  "embedding_dim": 32,
+  "eval_mode": "patch",
+  "eval_interval": 1,
+  "save_interval": 1,
+  "max_val_batches": 1,
+  "seed": 42
+}

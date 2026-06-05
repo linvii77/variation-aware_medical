@@ -8,6 +8,7 @@ intentionally want to launch training.
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 import sys
@@ -20,28 +21,29 @@ MODES = ("ce", "vapl", "scdl", "combined")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=["synapse", "amos"], default="synapse")
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--dataset", choices=["synapse", "amos"], default=None)
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=None)
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--split-file", type=Path, default=None)
     parser.add_argument("--val-split-file", type=Path, default=None)
-    parser.add_argument("--output-root", type=Path, default=ROOT / "outputs" / "ablations")
-    parser.add_argument("--patch-size", type=int, nargs=3, default=(96, 96, 96))
-    parser.add_argument("--foreground-prob", type=float, default=0.75)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--val-batch-size", type=int, default=1)
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--max-iters", type=int, default=1000)
-    parser.add_argument("--lr", type=float, default=1.0e-3)
-    parser.add_argument("--weight-decay", type=float, default=1.0e-5)
-    parser.add_argument("--base-channels", type=int, default=16)
-    parser.add_argument("--embedding-dim", type=int, default=256)
-    parser.add_argument("--eval-mode", choices=["patch", "full"], default="patch")
+    parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument("--patch-size", type=int, nargs=3, default=None)
+    parser.add_argument("--foreground-prob", type=float, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--val-batch-size", type=int, default=None)
+    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--max-iters", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--base-channels", type=int, default=None)
+    parser.add_argument("--embedding-dim", type=int, default=None)
+    parser.add_argument("--eval-mode", choices=["patch", "full"], default=None)
     parser.add_argument("--eval-stride", type=int, nargs=3, default=None)
-    parser.add_argument("--eval-interval", type=int, default=500)
-    parser.add_argument("--save-interval", type=int, default=500)
+    parser.add_argument("--eval-interval", type=int, default=None)
+    parser.add_argument("--save-interval", type=int, default=None)
     parser.add_argument("--max-val-batches", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--no-eval", action="store_true")
     parser.add_argument("--resume", type=Path, default=None)
@@ -50,7 +52,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Execute commands. Without this flag commands are only printed.",
     )
-    return parser.parse_args()
+    return fill_defaults(load_config(parser.parse_args()))
 
 
 def main() -> None:
@@ -65,6 +67,50 @@ def main() -> None:
 
     for command in commands:
         subprocess.run(command, cwd=ROOT, check=True)
+
+
+def load_config(args: argparse.Namespace) -> argparse.Namespace:
+    if args.config is None:
+        return args
+    payload = json.loads(args.config.read_text())
+    for key, value in payload.items():
+        attr = key.replace("-", "_")
+        if not hasattr(args, attr):
+            raise ValueError(f"Unknown config key: {key}")
+        current = getattr(args, attr)
+        if current is None or current is False:
+            setattr(args, attr, value)
+    return args
+
+
+def fill_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    defaults = {
+        "dataset": "synapse",
+        "modes": list(MODES),
+        "output_root": ROOT / "outputs" / "ablations",
+        "patch_size": (96, 96, 96),
+        "foreground_prob": 0.75,
+        "batch_size": 1,
+        "val_batch_size": 1,
+        "workers": 4,
+        "max_iters": 1000,
+        "lr": 1.0e-3,
+        "weight_decay": 1.0e-5,
+        "base_channels": 16,
+        "embedding_dim": 256,
+        "eval_mode": "patch",
+        "eval_interval": 500,
+        "save_interval": 500,
+        "seed": 42,
+    }
+    for key, value in defaults.items():
+        if getattr(args, key) is None:
+            setattr(args, key, value)
+    for key in ("data_root", "split_file", "val_split_file", "output_root", "resume"):
+        value = getattr(args, key)
+        if value is not None and not isinstance(value, Path):
+            setattr(args, key, Path(value))
+    return args
 
 
 def build_command(args: argparse.Namespace, mode: str) -> list[str]:
