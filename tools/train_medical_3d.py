@@ -7,6 +7,8 @@ before adding semi-supervised SCDL losses.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import random
 import sys
 import time
@@ -76,7 +78,9 @@ def main() -> None:
     fill_defaults(args)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    save_args(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    metrics_path = args.output_dir / "metrics.csv"
 
     dataset = MedicalVolumeDataset(
         root=args.data_root,
@@ -182,6 +186,25 @@ def main() -> None:
                 ),
                 flush=True,
             )
+            append_metrics(
+                metrics_path,
+                {
+                    "step": step,
+                    "split": "train",
+                    "mode": args.mode,
+                    "dataset": args.dataset,
+                    "case_id": batch["case_id"][0],
+                    "loss_total": loss.item(),
+                    "loss_seg": losses["loss_seg"].item(),
+                    "loss_cs": losses["loss_cs"].item(),
+                    "loss_scdl": losses["loss_scdl"].item(),
+                    "hard_fraction": losses["hard_fraction"].item(),
+                    "foreground_fraction": (targets > 0).float().mean().item(),
+                    "mean_dice": "",
+                    "mean_hd95": "",
+                    "elapsed_sec": elapsed,
+                },
+            )
 
         if step % args.save_interval == 0 or step == args.max_iters:
             save_checkpoint(
@@ -211,6 +234,25 @@ def main() -> None:
                 f"eval iter={step} mode={args.mode} "
                 f"mean_dice={mean_dice:.4f} mean_hd95={mean_hd95:.4f}",
                 flush=True,
+            )
+            append_metrics(
+                metrics_path,
+                {
+                    "step": step,
+                    "split": f"val_{args.eval_mode}",
+                    "mode": args.mode,
+                    "dataset": args.dataset,
+                    "case_id": "",
+                    "loss_total": "",
+                    "loss_seg": "",
+                    "loss_cs": "",
+                    "loss_scdl": "",
+                    "hard_fraction": "",
+                    "foreground_fraction": "",
+                    "mean_dice": mean_dice,
+                    "mean_hd95": mean_hd95,
+                    "elapsed_sec": time.time() - start_time,
+                },
             )
             if mean_dice > best_dice:
                 best_dice = mean_dice
@@ -263,6 +305,40 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def save_args(args: argparse.Namespace) -> None:
+    args_path = args.output_dir / "args.json"
+    serializable_args = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+    args_path.write_text(json.dumps(serializable_args, indent=2, sort_keys=True))
+
+
+def append_metrics(path: Path, row: dict[str, object]) -> None:
+    fieldnames = [
+        "step",
+        "split",
+        "mode",
+        "dataset",
+        "case_id",
+        "loss_total",
+        "loss_seg",
+        "loss_cs",
+        "loss_scdl",
+        "hard_fraction",
+        "foreground_fraction",
+        "mean_dice",
+        "mean_hd95",
+        "elapsed_sec",
+    ]
+    exists = path.exists()
+    with path.open("a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def save_checkpoint(

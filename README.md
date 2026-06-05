@@ -204,6 +204,15 @@ python tools/train_medical_3d.py \
   --resume outputs/synapse_scdl3d_combined/checkpoint_001000.pth
 ```
 
+Each run writes:
+
+```text
+args.json
+metrics.csv
+checkpoint_*.pth
+best_dice.pth
+```
+
 AMOS uses 16 classes by default:
 
 ```bash
