@@ -213,6 +213,16 @@ checkpoint_*.pth
 best_dice.pth
 ```
 
+Evaluate a saved checkpoint separately:
+
+```bash
+python tools/eval_medical_3d.py \
+  --checkpoint outputs/synapse_scdl3d_combined/best_dice.pth \
+  --dataset synapse \
+  --eval-mode full \
+  --patch-size 96 96 96
+```
+
 AMOS uses 16 classes by default:
 
 ```bash
