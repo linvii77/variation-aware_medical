@@ -31,6 +31,12 @@ from vap_pidnet.data import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=["synapse", "amos"], default="synapse")
+    parser.add_argument(
+        "--mode",
+        choices=["ce", "vapl", "scdl", "combined"],
+        default="vapl",
+        help="Ablation mode. Explicit lambda arguments override this default.",
+    )
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--split-file", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -45,8 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=1.0e-5)
     parser.add_argument("--base-channels", type=int, default=16)
     parser.add_argument("--embedding-dim", type=int, default=256)
-    parser.add_argument("--lambda-cs", type=float, default=1.0)
-    parser.add_argument("--lambda-scdl", type=float, default=0.0)
+    parser.add_argument("--lambda-cs", type=float, default=None)
+    parser.add_argument("--lambda-scdl", type=float, default=None)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--save-interval", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
@@ -128,6 +134,7 @@ def main() -> None:
                 " ".join(
                     [
                         f"iter={step}/{args.max_iters}",
+                        f"mode={args.mode}",
                         f"dataset={args.dataset}",
                         f"case={batch['case_id'][0]}",
                         f"image={tuple(images.shape)}",
@@ -149,6 +156,18 @@ def main() -> None:
 
 
 def fill_defaults(args: argparse.Namespace) -> None:
+    mode_lambdas = {
+        "ce": (0.0, 0.0),
+        "vapl": (1.0, 0.0),
+        "scdl": (0.0, 1.0),
+        "combined": (1.0, 1.0),
+    }
+    default_lambda_cs, default_lambda_scdl = mode_lambdas[args.mode]
+    if args.lambda_cs is None:
+        args.lambda_cs = default_lambda_cs
+    if args.lambda_scdl is None:
+        args.lambda_scdl = default_lambda_scdl
+
     data_root = ROOT / "all-data"
     if args.dataset == "synapse":
         args.num_classes = args.num_classes or SYNAPSE_NUM_CLASSES_DHC
@@ -160,7 +179,7 @@ def fill_defaults(args: argparse.Namespace) -> None:
         args.split_file = args.split_file or data_root / "amos_splits" / "train.txt"
 
     if args.output_dir is None:
-        args.output_dir = ROOT / "outputs" / f"{args.dataset}_scdl3d_vapl"
+        args.output_dir = ROOT / "outputs" / f"{args.dataset}_scdl3d_{args.mode}"
 
 
 def set_seed(seed: int) -> None:

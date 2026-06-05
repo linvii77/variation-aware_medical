@@ -106,3 +106,57 @@ loss.backward()
 
 For inference, call the model without `targets`; the projection head and proxy
 loss are skipped.
+
+## Stage 2: 3D Medical Segmentation Backbone
+
+The medical path adds a 3D V-Net/MagicNet-style backbone with optional VAPL and
+SCDL-style semantic class distribution losses.
+
+Expected local data layout:
+
+```text
+all-data/
+  Synapse/*.h5
+  lists_Synapse_DHC/{train_cases.txt,val_cases.txt,test_cases.txt}
+  AMOS/*_image.npy
+  AMOS/*_label.npy
+  amos_splits/*.txt
+```
+
+`all-data/` is ignored by git and is not uploaded to GitHub.
+
+Run a quick Synapse sanity check:
+
+```bash
+python tools/train_medical_3d.py \
+  --dataset synapse \
+  --mode combined \
+  --patch-size 32 32 32 \
+  --base-channels 4 \
+  --embedding-dim 32 \
+  --max-iters 1 \
+  --foreground-prob 1.0
+```
+
+Ablation modes:
+
+```text
+ce        lambda_cs=0, lambda_scdl=0
+vapl      lambda_cs=1, lambda_scdl=0
+scdl      lambda_cs=0, lambda_scdl=1
+combined  lambda_cs=1, lambda_scdl=1
+```
+
+AMOS uses 16 classes by default:
+
+```bash
+python tools/train_medical_3d.py \
+  --dataset amos \
+  --mode scdl \
+  --split-file all-data/amos_splits/labeled_5p.txt \
+  --patch-size 32 32 32 \
+  --base-channels 4 \
+  --embedding-dim 32 \
+  --max-iters 1 \
+  --foreground-prob 1.0
+```
