@@ -105,3 +105,71 @@ Before launching formal experiments, confirm:
 
 Formal training must not be launched until these settings are explicitly
 confirmed.
+
+## SCDL-Style Proxy Distribution (Option B) Experiment Plan
+
+### Background
+
+The original VAPL "representative proxy" term was verified to be a
+mathematical no-op under `softmax_scope="per_class"`: `sim(x, P_c)` is
+constant across the per-class softmax dimension and is fully cancelled,
+leaving `representative_proxies.grad` at noise level (~1.3e-5).
+
+It has been replaced with an SCDL-style learnable Gaussian proxy
+`(mu_c, sigma_c)` per class (`CompositionalSimilarityLoss.proxy_dist`,
+shape `[C, 2*embedding_dim]`). The new mechanism computes a cross-class
+assignment probability `q_c(x) = softmax_c(sim(x, mu_c) / sigma_c)` and
+multiplies it into the existing per-class variation sub-distribution
+`p_sub` to form a joint distribution `combined = q (x) p_sub` over
+`(class, variation)`. All downstream attraction/repulsion/focal loss
+code reuses `combined` unchanged.
+
+New diagnostics logged to `metrics.csv`: `proxy_assignment_accuracy`
+(`argmax_c q_c(x) == y`) and `proxy_sigma_mean`. New hyperparameter:
+`proxy_sigma_min=0.05`.
+
+### Pilot Validation (1000 iters, completed)
+
+`outputs/pilot_synapse_proxydist_1000_w0/synapse/vapl/`:
+
+- `proxy_dist.grad` is non-zero (fixes the no-op bug).
+- `proxy_sigma_mean` decreases smoothly and monotonically from 0.694 to
+  0.465 over 1000 steps, staying well above `proxy_sigma_min=0.05`.
+- `proxy_assignment_accuracy` rises from ~0.04 (near-random, 1/14=0.071)
+  at step 1 to 0.75-0.97 by step 10 onward.
+- `val_patch` dice at step 1000 is 0.0235 vs 0.0292 for the old
+  mechanism (`outputs/pilot_synapse_1000_w0/`) -- within noise at this
+  short scale, not a meaningful comparison.
+
+Conclusion: the new mechanism is numerically stable and the proxy
+parameters now carry real gradient signal. Direction validated;
+proceeding to formal comparison runs.
+
+### Formal Comparison Runs (20000 iters, Synapse, patch 96^3, seed 42)
+
+Existing baselines (old mechanism / no proxy):
+
+| Run | mode | lambda_cs | lambda_scdl | val_patch dice @20k |
+| --- | --- | --- | --- | --- |
+| `formal_synapse_ce_20000_w0` | ce | 0.0 | 0.0 | 0.2494 |
+| `formal_synapse_combined_l05_20000_w0` | combined (old proxy) | 1.0 | 0.5 | 0.2825 |
+
+Planned (new proxy mechanism), launched 2026-06-12, chained
+sequentially on a single GPU (~5.2h each, ~10.4h total):
+
+| Run | mode | lambda_cs | lambda_scdl | output_dir |
+| --- | --- | --- | --- | --- |
+| Phase A | vapl | 1.0 | 0.0 | `outputs/formal_synapse_vapl_proxydist_20000_w0/synapse/vapl` |
+| Phase B | combined | 1.0 | 0.5 | `outputs/formal_synapse_combined_proxydist_l05_20000_w0/synapse/combined` |
+
+Combined stdout/stderr log: `outputs/formal_proxydist_phaseAB.log`.
+
+### Optional Follow-ups
+
+- **Phase C**: ablation switch to force `q` uniform (no proxy) and
+  measure the dice delta directly, isolating the proxy's contribution
+  to final segmentation accuracy (beyond `proxy_assignment_accuracy`).
+- **Phase D**: repeat Phase A/B on AMOS (16 classes) for cross-dataset
+  generalization.
+- **Phase E**: re-run the better of Phase A/B with 2 additional seeds
+  (43, 44) for mean +/- std significance.
