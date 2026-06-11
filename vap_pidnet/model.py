@@ -126,6 +126,8 @@ class VAPLPIDNetM(nn.Module):
                 "negative_probability": loss_cs.detach(),
                 "hard_fraction": loss_cs.detach(),
                 "valid_pixels": loss_cs.detach(),
+                "proxy_assignment_accuracy": loss_cs.detach(),
+                "proxy_sigma_mean": loss_cs.detach(),
             }
         total_loss = loss_seg + self.aux_loss_weight * loss_aux
         total_loss = total_loss + self.lambda_cs * loss_cs
@@ -298,6 +300,8 @@ class VAPLSCDL3D(nn.Module):
                 "negative_probability": loss_cs.detach(),
                 "hard_fraction": loss_cs.detach(),
                 "valid_pixels": loss_cs.detach(),
+                "proxy_assignment_accuracy": loss_cs.detach(),
+                "proxy_sigma_mean": loss_cs.detach(),
             }
 
         if self.lambda_scdl > 0.0:

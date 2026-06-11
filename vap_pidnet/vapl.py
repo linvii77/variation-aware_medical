@@ -59,6 +59,8 @@ class VAPLStats:
     negative_probability: torch.Tensor
     hard_fraction: torch.Tensor
     valid_pixels: torch.Tensor
+    proxy_assignment_accuracy: torch.Tensor
+    proxy_sigma_mean: torch.Tensor
 
 
 class CompositionalSimilarityLoss(nn.Module):
@@ -82,6 +84,7 @@ class CompositionalSimilarityLoss(nn.Module):
         lambda_r: float = 1.0,
         ignore_index: int = 255,
         softmax_scope: SoftmaxScope = "per_class",
+        proxy_sigma_min: float = 0.05,
         eps: float = 1.0e-7,
     ) -> None:
         super().__init__()
@@ -104,10 +107,13 @@ class CompositionalSimilarityLoss(nn.Module):
         self.lambda_r = lambda_r
         self.ignore_index = ignore_index
         self.softmax_scope = softmax_scope
+        self.proxy_sigma_min = proxy_sigma_min
         self.eps = eps
 
-        self.representative_proxies = nn.Parameter(
-            torch.empty(num_classes, embedding_dim)
+        # Replaces the single-point representative proxy with an SCDL-style
+        # per-class Gaussian (mu, sigma), stored as a single [C, 2*D] tensor.
+        self.proxy_dist = nn.Parameter(
+            torch.empty(num_classes, embedding_dim * 2)
         )
         self.variation_vectors = nn.Parameter(
             torch.empty(num_classes, num_variations, embedding_dim)
@@ -115,7 +121,7 @@ class CompositionalSimilarityLoss(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.xavier_uniform_(self.representative_proxies)
+        nn.init.xavier_uniform_(self.proxy_dist)
         nn.init.xavier_uniform_(self.variation_vectors)
 
     def forward(
@@ -142,16 +148,31 @@ class CompositionalSimilarityLoss(nn.Module):
                 negative_probability=zero,
                 hard_fraction=zero,
                 valid_pixels=torch.zeros((), device=embeddings.device),
+                proxy_assignment_accuracy=zero,
+                proxy_sigma_mean=zero,
             )
             return zero, stats
 
-        p_sub = self._variation_probabilities(flat_embeddings)
+        x = F.normalize(flat_embeddings, p=2, dim=1)
         arange = torch.arange(flat_targets.numel(), device=flat_targets.device)
 
-        p_pos = p_sub[arange, flat_targets].amax(dim=1).clamp_min(self.eps)
+        # SCDL-style distribution proxy: q[:, c] is the probability that a
+        # token belongs to class c, derived from the per-class Gaussian
+        # (mu_c, sigma_c). This replaces the single-point representative
+        # proxy from the original factorized similarity score.
+        q, sigma_c = self._proxy_assignment_probabilities(x)
+        # Per-class softmax over variation vectors (unchanged from the
+        # original formulation, minus the additive proxy_sim term that was
+        # cancelled by this same softmax).
+        p_sub = self._variation_subdistribution(x)
+        # Joint distribution over (class, variation): combined[n, c, k] =
+        # q_c(x_n) * p_sub(x_n, v_{c,k} | c). Sums to 1 over (c, k).
+        combined = q.unsqueeze(-1) * p_sub
+
+        p_pos = combined[arange, flat_targets].amax(dim=1).clamp_min(self.eps)
         loss_attraction = -torch.log(p_pos).mean()
 
-        p_neg = self._negative_probability(p_sub, flat_targets)
+        p_neg = self._negative_probability(combined, flat_targets)
         p_neg_for_log = p_neg.clamp(min=0.0, max=1.0 - self.eps)
         ratio = p_neg_for_log / p_pos.clamp_min(self.eps)
         hard_mask = ratio > self.tau_r
@@ -165,6 +186,7 @@ class CompositionalSimilarityLoss(nn.Module):
             loss_repulsion = loss_attraction.new_zeros(())
 
         loss_cs = loss_attraction + self.lambda_r * loss_repulsion
+        proxy_assignment_accuracy = (q.argmax(dim=1) == flat_targets).float().mean()
         stats = VAPLStats(
             loss_cs=loss_cs,
             loss_attraction=loss_attraction,
@@ -175,6 +197,8 @@ class CompositionalSimilarityLoss(nn.Module):
             valid_pixels=torch.as_tensor(
                 flat_targets.numel(), device=embeddings.device, dtype=torch.float32
             ),
+            proxy_assignment_accuracy=proxy_assignment_accuracy.detach(),
+            proxy_sigma_mean=sigma_c.detach().mean(),
         )
         return loss_cs, stats
 
@@ -207,14 +231,27 @@ class CompositionalSimilarityLoss(nn.Module):
         )
         return flat_embeddings[valid], flat_targets[valid]
 
-    def _variation_probabilities(self, flat_embeddings: torch.Tensor) -> torch.Tensor:
-        x = F.normalize(flat_embeddings, p=2, dim=1)
-        proxies = F.normalize(self.representative_proxies, p=2, dim=1)
-        variations = F.normalize(self.variation_vectors, p=2, dim=-1)
+    def _proxy_params(self) -> tuple[torch.Tensor, torch.Tensor]:
+        mu = self.proxy_dist[:, : self.embedding_dim]
+        sigma = F.softplus(self.proxy_dist[:, self.embedding_dim :])
+        sigma = sigma.clamp_min(self.proxy_sigma_min)
+        return mu, sigma
 
-        proxy_sim = torch.matmul(x, proxies.t())
+    def _proxy_assignment_probabilities(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """SCDL-style class assignment probability q_c(x) = softmax_c(sim(x, mu_c) / sigma_c)."""
+        mu, sigma = self._proxy_params()
+        mu_norm = F.normalize(mu, p=2, dim=1)
+        sigma_c = sigma.mean(dim=1)
+        proxy_logits = torch.matmul(x, mu_norm.t()) / sigma_c.unsqueeze(0)
+        q = torch.softmax(proxy_logits, dim=1)
+        return q, sigma_c
+
+    def _variation_subdistribution(self, x: torch.Tensor) -> torch.Tensor:
+        variations = F.normalize(self.variation_vectors, p=2, dim=-1)
         variation_sim = torch.einsum("nd,ckd->nck", x, variations)
-        scores = proxy_sim.unsqueeze(-1) + self.lambda_var * variation_sim
+        scores = self.lambda_var * variation_sim
 
         if self.softmax_scope == "per_class":
             return torch.softmax(self.tau * scores, dim=2)
@@ -224,12 +261,12 @@ class CompositionalSimilarityLoss(nn.Module):
         return flat_prob.view(-1, self.num_classes, self.num_variations)
 
     def _negative_probability(
-        self, p_sub: torch.Tensor, flat_targets: torch.Tensor
+        self, joint_prob: torch.Tensor, flat_targets: torch.Tensor
     ) -> torch.Tensor:
         if self.num_classes == 1:
-            return torch.zeros_like(p_sub[:, 0, 0])
+            return torch.zeros_like(joint_prob[:, 0, 0])
 
-        neg = p_sub.clone()
+        neg = joint_prob.clone()
         arange = torch.arange(flat_targets.numel(), device=flat_targets.device)
         neg[arange, flat_targets, :] = -torch.inf
         return neg.flatten(1).amax(dim=1)
