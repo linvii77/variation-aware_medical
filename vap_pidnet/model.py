@@ -206,6 +206,7 @@ class VAPLSCDL3D(nn.Module):
         tau_r: float = 0.8,
         lambda_r: float = 1.0,
         softmax_scope: SoftmaxScope = "per_class",
+        proxy_sigma_min: float = 0.05,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -234,6 +235,7 @@ class VAPLSCDL3D(nn.Module):
             lambda_r=lambda_r,
             ignore_index=ignore_index,
             softmax_scope=softmax_scope,
+            proxy_sigma_min=proxy_sigma_min,
         )
         self.scdl_loss = SemanticClassDistributionLoss(
             in_channels=self.backbone.feature_channels,
@@ -367,6 +369,7 @@ def build_vapl_scdl_3d(
     lambda_cs: float = 1.0,
     lambda_scdl: float = 0.0,
     ignore_index: int = 255,
+    proxy_sigma_min: float = 0.05,
 ) -> VAPLSCDL3D:
     """Build the 3D SCDL-style medical backbone with VAPL loss."""
 
@@ -378,4 +381,5 @@ def build_vapl_scdl_3d(
         lambda_cs=lambda_cs,
         lambda_scdl=lambda_scdl,
         ignore_index=ignore_index,
+        proxy_sigma_min=proxy_sigma_min,
     )

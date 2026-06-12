@@ -59,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding-dim", type=int, default=256)
     parser.add_argument("--lambda-cs", type=float, default=None)
     parser.add_argument("--lambda-scdl", type=float, default=None)
+    parser.add_argument("--proxy-sigma-min", type=float, default=None)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--eval-mode", choices=["patch", "full"], default="patch")
     parser.add_argument("--eval-interval", type=int, default=500)
@@ -125,6 +126,7 @@ def main() -> None:
         embedding_dim=args.embedding_dim,
         lambda_cs=args.lambda_cs,
         lambda_scdl=args.lambda_scdl,
+        proxy_sigma_min=args.proxy_sigma_min,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -286,6 +288,8 @@ def fill_defaults(args: argparse.Namespace) -> None:
         args.lambda_cs = default_lambda_cs
     if args.lambda_scdl is None:
         args.lambda_scdl = default_lambda_scdl
+    if args.proxy_sigma_min is None:
+        args.proxy_sigma_min = 0.05
 
     data_root = ROOT / "all-data"
     if args.dataset == "synapse":
