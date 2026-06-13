@@ -149,27 +149,125 @@ proceeding to formal comparison runs.
 
 Existing baselines (old mechanism / no proxy):
 
-| Run | mode | lambda_cs | lambda_scdl | val_patch dice @20k |
-| --- | --- | --- | --- | --- |
-| `formal_synapse_ce_20000_w0` | ce | 0.0 | 0.0 | 0.2494 |
-| `formal_synapse_combined_l05_20000_w0` | combined (old proxy) | 1.0 | 0.5 | 0.2825 |
+| Run | mode | lambda_cs | lambda_scdl | val_patch dice @20k | best dice (step) |
+| --- | --- | --- | --- | --- | --- |
+| `formal_synapse_ce_20000_w0` | ce | 0.0 | 0.0 | 0.2494 | 0.2494 (20000) |
+| `formal_synapse_combined_l05_20000_w0` | combined (old proxy) | 1.0 | 0.5 | 0.2825 | 0.2825 (20000) |
 
-Planned (new proxy mechanism), launched 2026-06-12, chained
-sequentially on a single GPU (~5.2h each, ~10.4h total):
+New proxy mechanism, `lambda_cs=1.0` (unchanged from old default),
+completed 2026-06-12:
 
-| Run | mode | lambda_cs | lambda_scdl | output_dir |
-| --- | --- | --- | --- | --- |
-| Phase A | vapl | 1.0 | 0.0 | `outputs/formal_synapse_vapl_proxydist_20000_w0/synapse/vapl` |
-| Phase B | combined | 1.0 | 0.5 | `outputs/formal_synapse_combined_proxydist_l05_20000_w0/synapse/combined` |
+| Run | mode | lambda_cs | lambda_scdl | val_patch dice @20k | best dice (step) |
+| --- | --- | --- | --- | --- | --- |
+| `formal_synapse_vapl_proxydist_20000_w0` | vapl | 1.0 | 0.0 | 0.2172 | 0.2359 (19000) |
+| `formal_synapse_combined_proxydist_l05_20000_w0` | combined | 1.0 | 0.5 | 0.2036 | 0.2389 (19000) |
 
-Combined stdout/stderr log: `outputs/formal_proxydist_phaseAB.log`.
+Both new-proxy runs underperformed their old-mechanism counterparts
+and showed an unhealthy dip from step 19000 to step 20000 (vapl:
+0.2359 -> 0.2172; combined: 0.2389 -> 0.2036). This motivated the
+loss-balance tuning below.
+
+### Loss-Balance Tuning (lambda_cs / proxy_sigma_min Sweep)
+
+#### Root cause
+
+`combined = q_c(x) (x) p_sub` is structurally harder than the old
+mechanism's `p_sub`-only objective, because `q_c(x)` must additionally
+match the true class -- this inflates `loss_cs` by roughly 2-3x
+relative to the old mechanism. With `lambda_cs=1.0` carried over
+unchanged, `lambda_cs*loss_cs` dominates `loss_seg` (ratio ~2.1 @ step
+20000 for both new-proxy runs above), starving the backbone of
+segmentation gradient and producing the dice underperformance and
+end-of-training dip.
+
+`proxy_sigma_min` (the floor on `sigma_c`) was hardcoded at 0.05 and
+not exposed as a CLI hyperparameter; this was fixed first
+(`--proxy-sigma-min`, threaded through
+`tools/train_medical_3d.py` -> `build_vapl_scdl_3d()` ->
+`VAPLSCDL3D.__init__` -> `CompositionalSimilarityLoss`).
+
+#### Pilot sweep (3000 iters, mode=vapl, seed=42)
+
+Reference point (`lambda_cs=1.0, proxy_sigma_min=0.05`, from
+`formal_synapse_vapl_proxydist_20000_w0`): dice@3000 = 0.0406.
+
+| # | lambda_cs | proxy_sigma_min | dice@3000 |
+| --- | --- | --- | --- |
+| P1 | 0.1 | 0.05 | 0.0450 |
+| P2 | 0.2 | 0.05 | 0.0377 |
+| P3 | 0.5 | 0.05 | 0.0341 |
+| P4 | 0.2 | 0.15 | 0.0349 |
+| P5 | 0.2 | 0.25 | 0.0339 |
+| P6 | 0.5 | 0.15 | 0.0487 |
+
+Only P1 and P6 exceeded the reference; both were extended via
+`--resume` to 8000 iters for a second look:
+
+| step | P1 (lcs0.1/sig0.05) dice | P6 (lcs0.5/sig0.15) dice |
+| --- | --- | --- |
+| 1000 | 0.0302 | 0.0326 |
+| 2000 | 0.0298 | 0.0328 |
+| 3000 | 0.0450 | 0.0487 |
+| 4000 | 0.0499 | 0.0571 |
+| 5000 | 0.0480 | 0.0430 |
+| 6000 | 0.0601 | 0.0636 |
+| 7000 | 0.0518 | 0.0443 |
+| 8000 | **0.0961** | 0.0625 |
+
+P1 (`lambda_cs=0.1, proxy_sigma_min=0.05`) pulled decisively ahead at
+8000 steps (~1.5x P6) and was selected for the formal 20000-iter runs.
+Note `proxy_sigma_min=0.05` was already the prior hardcoded default, so
+this is also the minimal-change choice.
+
+### Formal Phase A2/B2 (20000 iters, lambda_cs=0.1, proxy_sigma_min=0.05, seed 42)
+
+Completed 2026-06-13, chained sequentially on a single GPU
+(~71 min each, ~143 min total -- much faster than the original ~5.2h/run
+estimate):
+
+| Run | mode | lambda_cs | lambda_scdl | val_patch dice @20k | best dice (step) | output_dir |
+| --- | --- | --- | --- | --- | --- | --- |
+| Phase A2 | vapl | 0.1 | 0.0 | 0.2582 | 0.2632 (18000) | `outputs/formal_synapse_vapl_proxydist_lcs0.1_sig0.05_20000_w0/synapse/vapl` |
+| Phase B2 | combined | 0.1 | 0.5 | 0.2730 | **0.2870 (18000)** | `outputs/formal_synapse_combined_proxydist_lcs0.1_sig0.05_l05_20000_w0/synapse/combined` |
+
+Loss balance at step 20000 (`lambda_cs*loss_cs / loss_seg`): Phase A2
+~0.29, Phase B2 ~0.21 -- both healthy, vs ~2.1 for the `lambda_cs=1.0`
+runs. `proxy_sigma_mean` decreased smoothly from ~0.47 to ~0.14-0.15
+over 20000 steps, still well above the 0.05 floor (floor not yet
+binding at this horizon). `proxy_assignment_accuracy` at step 20000:
+0.890 (A2) / 0.916 (B2).
+
+#### Success criteria check
+
+1. **dice@20000 > 0.2825** (old combined baseline): Phase A2 0.2582
+   (no), Phase B2 0.2730 (no, but 96.6% of baseline). Phase B2's best
+   checkpoint (`best_dice.pth`, 0.2870 @ step 18000) **does** exceed
+   the baseline.
+2. **No more end-of-run dip** (step 19000 -> 20000): Phase A2
+   0.2554 -> 0.2582 (up), Phase B2 0.2456 -> 0.2730 (up). Both pass --
+   the instability seen in the `lambda_cs=1.0` runs is resolved.
+
+**Conclusion**: `lambda_cs=0.1` fixes the loss-balance pathology and
+the end-of-run instability, lifting dice by +18.9% (vapl) / +34.1%
+(combined) over the `lambda_cs=1.0` new-proxy runs. The new mechanism
+is now close to (Phase B2 final) or exceeds (Phase B2 peak) the old
+(no-op) mechanism's baseline, and clearly better than the
+`lambda_cs=1.0` new-proxy attempts. `(lambda_cs=0.1,
+proxy_sigma_min=0.05)` is adopted as the new default for this
+mechanism going forward.
 
 ### Optional Follow-ups
 
 - **Phase C**: ablation switch to force `q` uniform (no proxy) and
   measure the dice delta directly, isolating the proxy's contribution
   to final segmentation accuracy (beyond `proxy_assignment_accuracy`).
-- **Phase D**: repeat Phase A/B on AMOS (16 classes) for cross-dataset
-  generalization.
-- **Phase E**: re-run the better of Phase A/B with 2 additional seeds
-  (43, 44) for mean +/- std significance.
+- **Phase D**: repeat Phase A2/B2 on AMOS (16 classes) for
+  cross-dataset generalization.
+- **Phase E**: re-run Phase B2 (`lambda_cs=0.1, lambda_scdl=0.5,
+  proxy_sigma_min=0.05`) with 2 additional seeds (43, 44) for mean +/-
+  std significance, since its peak (0.2870@18000) already exceeds the
+  old combined baseline (0.2825) but its final-step value (0.2730) is
+  slightly below it -- seed variance may settle this.
+- **Phase F**: evaluate `best_dice.pth` (not just the final checkpoint)
+  on the held-out test split for both Phase A2 and Phase B2, since the
+  formal comparison above is based on `val_patch` at step 20000 only.
