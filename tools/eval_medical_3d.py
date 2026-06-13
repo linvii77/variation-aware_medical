@@ -75,7 +75,14 @@ def main() -> None:
         lambda_scdl=0.0,
     ).to(device)
     checkpoint = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(checkpoint["model"])
+    incompatible = model.load_state_dict(checkpoint["model"], strict=False)
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        print(
+            f"warning: non-strict checkpoint load, "
+            f"missing={incompatible.missing_keys} "
+            f"unexpected={incompatible.unexpected_keys}",
+            flush=True,
+        )
 
     metrics = evaluate(
         model=model,
