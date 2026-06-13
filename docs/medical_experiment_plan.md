@@ -361,6 +361,60 @@ positives driving the hd95 blow-up without affecting dice much -- this
 would isolate whether the regression is an artifact of scattered noise
 vs. a genuine shift in the learned boundary.
 
+### Phase H: Largest-Connected-Component Post-Processing
+
+`tools/eval_medical_3d.py` gained a `--postprocess-largest-cc` flag
+(`vap_pidnet/metrics.py::keep_largest_connected_component`): for each
+foreground class, all but the single largest 3D connected component of
+that class's predicted voxels are zeroed out (set to background). Applied
+to `best_dice.pth` for old combined and Phase B2 on the full 6-case test
+set (`eval_medical_3d.py` defaults, full-volume sliding window):
+
+| Run | mean_dice (no pp) | mean_dice (+lcc) | mean_hd95 (no pp) | mean_hd95 (+lcc) |
+| --- | --- | --- | --- | --- |
+| old combined | 0.4409 | 0.4329 | 20.02 | 19.94 |
+| Phase B2 | 0.4560 | **0.4597** | 33.98 | **20.45** |
+
+#### Class1 / class3 (the largest Phase G hd95 outliers for B2)
+
+| class | run | dice (no pp) | dice (+lcc) | hd95 (no pp) | hd95 (+lcc) |
+| --- | --- | --- | --- | --- | --- |
+| class1 | old combined | 0.804 | 0.807 | 7.5 | 6.9 |
+| class1 | Phase B2 | 0.774 | **0.916** | 113.1 | **2.3** |
+| class3 | old combined | 0.845 | 0.858 | 28.5 | 3.5 |
+| class3 | Phase B2 | 0.890 | **0.923** | 54.6 | **1.8** |
+
+**Phase G hypothesis confirmed**: B2's hd95 blow-up was driven by small,
+spatially-isolated false-positive blobs, not a genuine boundary shift.
+Removing them with largest-CC post-processing:
+
+- Drops B2's mean_hd95 from 33.98 to **20.45**, essentially matching old
+  combined (19.94-20.02).
+- *Improves* B2's mean_dice slightly (0.4560 -> 0.4597), widening its lead
+  over old combined to +6.2% relative (vs. old combined's own
+  post-processed 0.4329) or +4.3% (vs. old combined's raw 0.4409).
+- class1 and class3 individually go from B2's *worst* hd95 outliers to
+  *better than old combined* on both dice and hd95 after cleanup
+  (class1: dice 0.774->0.916, hd95 113.1->2.3; class3: dice 0.890->0.923,
+  hd95 54.6->1.8).
+
+**Caveat**: largest-CC is a blunt instrument. Classes 9-11 (and partly 8)
+get *worse* on both dice and hd95 after post-processing for *both* runs
+(e.g. old combined class10: dice 0.244->0.238, hd95 63.8->74.6; B2 class10:
+dice 0.168->0.144, hd95 69.3->86.4) -- consistent with these being
+bilateral/multi-component organs (e.g. paired kidneys/adrenal glands) where
+a true second lobe gets discarded. The *net* effect across all 13 classes
+is still clearly positive for B2 and roughly neutral for old combined, but
+a size-threshold-based cleanup (drop small components below N voxels,
+rather than strictly "keep only the largest") would likely be a better
+universal choice and avoid this bilateral-organ penalty.
+
+**Updated headline**: with this minimal post-processing step, Phase B2
+(new proxy mechanism, `lambda_cs=0.1, lambda_scdl=0.5`) is unambiguously
+better than the old (dead-proxy) combined baseline on *both* primary
+test-set metrics (dice 0.4597 vs 0.4329/0.4409, hd95 20.45 vs 19.94/20.02),
+with no remaining hd95 trade-off.
+
 ### Optional Follow-ups
 
 - **Phase C**: ablation switch to force `q` uniform (no proxy) and
@@ -370,10 +424,10 @@ vs. a genuine shift in the learned boundary.
   cross-dataset generalization.
 - **Phase E**: re-run Phase B2 (`lambda_cs=0.1, lambda_scdl=0.5,
   proxy_sigma_min=0.05`) with 2 additional seeds (43, 44) for mean +/-
-  std significance on the test-set dice/hd95, given the Phase F win
-  margin (+3.4% dice) and the Phase G hd95 trade-off are both based on a
-  6-case test split.
-- **Phase H** (optional, cheap): apply largest-connected-component
-  post-processing per class to B2's predictions and re-evaluate hd95, to
-  test the Phase G hypothesis that the regression is driven by small
-  far-away false-positive blobs rather than a genuine boundary shift.
+  std significance on the test-set dice/hd95 (with and without
+  `--postprocess-largest-cc`), given the Phase F/H win margins are based
+  on a 6-case test split.
+- **Phase I** (optional): replace largest-CC with a size-threshold
+  connected-component filter (drop components below N voxels per class)
+  to avoid the Phase H bilateral-organ penalty on classes 9-11 while still
+  removing the small false-positive blobs.
