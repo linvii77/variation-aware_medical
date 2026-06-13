@@ -90,9 +90,18 @@ beats the old dead-proxy baseline (`OldComb`) on *both* metrics:
 | 13 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | **mean** | 0.3742 | 0.4409 | 0.4230 | 0.4560 | 0.4329 | **0.4597** |
 
-Classes 5, 12, 13 are 0.0 dice across *all six* evaluated checkpoints --
-this appears to be a property of the 6-case test split (these classes are
-likely absent or degenerate there), not method-specific.
+Classes 5, 12, 13 are 0.0 dice across *all six* evaluated checkpoints.
+**This is not because these classes are absent from the test split** --
+direct inspection of the `.h5` label volumes confirms all 6 test cases
+contain real voxels for these classes (class 5: 543-11212, class 12:
+633-1757, class 13: 543-2480, each <=0.9% of the per-case foreground
+total). The model simply never predicts *any* voxel of these classes, in
+any of the 6 configurations, including the plain CE baseline -- i.e. this
+is a training-pipeline limitation (extreme class imbalance under
+voxel-wise CE + foreground-pooled patch sampling), not a property of the
+new proxy mechanism. See `medical_experiment_plan.md` Phase J for a
+proposed fix (CE+Dice composite loss + class-balanced foreground
+sampling).
 
 ## 5. Per-Class HD95 (test set, 6 cases)
 
@@ -304,4 +313,7 @@ size pattern matches this convention exactly across all three cases:
 Classes 5/12/13 (esophagus, adrenal glands -- small/thin structures) being
 0.0 dice across all evaluated checkpoints is consistent with this
 convention (these are the hardest/smallest classes in the standard
-Synapse-13 benchmark).
+Synapse-13 benchmark) -- but as noted in Section 4, this is a training
+pipeline limitation (the model never predicts these classes at all, in any
+configuration), not evidence that they are absent from the test data. The
+GT for all three classes is present and non-trivial in every test case.

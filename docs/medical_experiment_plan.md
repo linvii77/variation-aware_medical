@@ -415,6 +415,131 @@ better than the old (dead-proxy) combined baseline on *both* primary
 test-set metrics (dice 0.4597 vs 0.4329/0.4409, hd95 20.45 vs 19.94/20.02),
 with no remaining hd95 trade-off.
 
+### Phase J (Proposed, NOT YET EXECUTED): CE+Dice Composite Loss + Class-Balanced Foreground Sampling
+
+Raised after Phase H: (1) B2's *raw* (pre-LCC) hd95 is much worse than
+OldComb (33.98 vs 20.02) -- relying on LCC post-processing alone to
+"rescue" this is unsatisfying for the paper narrative; (2) classes
+5/12/13 (esophagus, right/left adrenal gland) are 0.0 dice across *all
+six* evaluated checkpoints, including the plain CE baseline.
+
+#### Problem 1 root-cause analysis
+
+- `combined = q_c(x) (x) p_sub` (Section 1) is consumed **only** inside
+  `CompositionalSimilarityLoss.forward()` to produce `loss_cs`
+  (`vap_pidnet/vapl.py:170-188`). It never touches the segmentation
+  logits. At inference (`tools/eval_medical_3d.py`), `model(images)` is
+  called with `targets=None`, which short-circuits before
+  `projection_head`/`cs_loss`/`scdl_loss` are even evaluated
+  (`vap_pidnet/model.py:272-281`). So the dice/hd95 differences between
+  OldComb/A2/B2 come *entirely* from how the auxiliary losses reshape the
+  shared `SCDLVNet3D` backbone weights during training -- not from any
+  proxy-weighted prediction at test time.
+- A2 (`mode=vapl`, `lambda_scdl=0`, mean_hd95=46.56) is *worse* than B2
+  (`mode=combined`, `lambda_scdl=0.5`, mean_hd95=33.98), which is worse
+  than OldComb (mean_hd95=20.02). The common factor in A2 and B2 is the
+  **new proxy mechanism** (`lambda_cs=0.1` with the learnable Gaussian
+  `(mu_c, sigma_c)`), not the SCDL branch -- ruling out `loss_scdl` as the
+  primary cause.
+- Per-class hd95 (B2 vs OldComb, Section 5 of `paper_results.md`): class 1
+  (spleen) 113.11 vs 7.47, class 3 (left kidney) 54.60 vs 28.54, class 7
+  (stomach) 71.04 vs 20.17. All three are left-upper-quadrant soft-tissue
+  organs with similar CT intensity and that are anatomically adjacent to
+  each other -- consistent with the new proxy mechanism's backbone
+  producing a handful of spatially isolated misclassifications among
+  these neighboring, texture-similar organs.
+- `loss_seg` is **pure voxel-wise cross-entropy**
+  (`vap_pidnet/model.py:284-288`). CE is insensitive to *where* an error
+  occurs -- a handful of false-positive voxels out of ~10-20M barely move
+  the average. HD95, by contrast, is the 95th percentile of *surface*
+  distances and can be dominated by a single isolated outlier blob. This
+  mismatch between the training loss and the hd95 eval metric is the
+  structural reason a few stray voxels can blow up hd95 by 10x while dice
+  moves by <5%.
+
+#### Problem 2 root-cause analysis (corrects the earlier "absent in test
+split" claim in `paper_results.md` Sections 4/Appendix -- now falsified)
+
+- Direct inspection of all 6 test cases' `.h5` label volumes confirms
+  classes 5/12/13 are **present with non-trivial voxel counts** in
+  *every* test case: class 5 (esophagus) 543-11212 voxels, class 12
+  (right adrenal) 633-1757 voxels, class 13 (left adrenal) 543-2480
+  voxels (each <=0.9% of the per-case foreground voxel total). The
+  "0.0 dice" is therefore not a metric artifact from an empty target --
+  `DiceHD95.update` appends a real `dice=0.0` because `pred_mask` is
+  empty while `target_mask` is non-empty: **the model never predicts a
+  single voxel of classes 5/12/13, anywhere, in any of the 6
+  configurations** (including plain CE).
+- `foreground_crop_starts` (`vap_pidnet/data/medical3d.py:175-199`) picks
+  the patch center by sampling **uniformly over all foreground voxels
+  pooled together** (`np.argwhere(target > 0)`). class 6 (liver) alone has
+  230k-560k voxels per case vs ~600-2500 for classes 12/13 -- so a
+  randomly chosen foreground voxel lands in class 12/13 with probability
+  roughly 0.05%-0.2%. With `foreground_prob=0.75` this gives each of these
+  classes only a handful of centered patches across 20000 iterations.
+- Even when such a patch *is* sampled, voxel-wise CE averages over all
+  ~884736 voxels in a 96^3 patch -- a class occupying <=0.2% of even a
+  "centered" patch contributes a near-zero share of the CE gradient. So
+  CE is the dominant blocker, not just sampling frequency.
+
+#### Proposed fix (addresses both problems with one change set)
+
+1. **Add a soft Dice term to `loss_seg`** (standard CE+Dice composite,
+   as in nnU-Net): new `vap_pidnet/losses.py` with
+   `soft_dice_loss(logits, targets, num_classes, ignore_index,
+   include_background=False, eps=1e-5)`, computed per-class on
+   `softmax(logits)` with epsilon smoothing in numerator/denominator.
+   - For a class with *no* GT voxels in the current patch but some FP
+     predictions, `dice_c = eps / (FP_count + eps) ~= 0`, so
+     `loss_dice_c ~= 1` -- this directly penalizes hallucinated
+     false-positive blobs for classes absent from the patch, targeting
+     Problem 1's "isolated speckle" pathology at the training-loss level
+     instead of only via post-hoc LCC.
+   - Because Dice is normalized per class (not per voxel), a class
+     occupying 0.1% of a patch still contributes a full `[0,1]` term --
+     directly counteracting the CE dilution behind Problem 2.
+2. **Class-balanced (stratified) foreground patch sampling**: rewrite
+   `foreground_crop_starts` to first pick a *class* uniformly at random
+   from the foreground classes present in the volume, then pick a random
+   voxel of *that* class as the patch center (instead of pooling all
+   foreground voxels by raw voxel count). This raises the exposure
+   frequency of classes 5/12/13 from <0.2% to roughly 1/(num present
+   classes) (~8%), giving the new Dice term actual positive examples to
+   learn from. `foreground_prob`/`foreground_margin` keep their current
+   meaning and defaults -- no CLI surface change needed here.
+3. New `--lambda-dice` CLI flag in `tools/train_medical_3d.py` (default
+   `0.5`, the common CE:Dice 1:1 weighting), threaded through
+   `build_vapl_scdl_3d()` -> `VAPLSCDL3D.__init__` -> `forward()`:
+   `loss_seg = ce + lambda_dice * soft_dice_loss(...)`. Applies uniformly
+   to **all** modes (ce/vapl/combined) so any later comparison stays fair.
+
+#### Staged validation plan (no 20000-iter run without explicit confirmation)
+
+1. Code changes + 1-2 iter smoke test (`--lambda-dice 0.5 --max-iters 1
+   --no-eval`): confirm `args.json` records `lambda_dice`, `loss_total`
+   includes the dice term, and a standalone sampling test shows class
+   5/12/13 patch centers at roughly the expected ~1/13 rate (vs near-zero
+   before).
+2. 3000-iter pilot, `mode=combined` (B2 config: `lambda_cs=0.1,
+   proxy_sigma_min=0.05, lambda_scdl=0.5`) + `--lambda-dice 0.5` + new
+   sampling, seed=42. Compare `val_patch` dice @1000/2000/3000 against the
+   existing B2 reference trajectory (0.0302/0.0310/0.0389). Also run a
+   quick full-volume test-set eval on the step-3000 checkpoint: even with
+   low absolute dice, check whether classes 5/12/13 now get *any* non-zero
+   predicted voxels (the key "did the fix engage" signal, independent of
+   overall quality at 3000 steps).
+3. Decision gate: if (a) classes 5/12/13 become non-zero in at least some
+   cases and (b) the val_patch dice trend is not worse than the B2
+   reference, propose re-running **all four** formal 20000-iter configs
+   (CE, OldComb, A2, B2) with `--lambda-dice 0.5` + the new sampling, for
+   a fair like-for-like comparison. This is a ~4x20000-iter commitment
+   (roughly 4-5 hours total based on the ~645s/3000-iter pilot rate) and
+   requires explicit user confirmation per the Formal Run Gate before
+   starting.
+4. After the formal reruns (if approved), update `paper_results.md` with
+   the new headline numbers and re-evaluate whether `B2+LCC` is still
+   needed, or whether the raw (pre-LCC) numbers now stand on their own.
+
 ### Optional Follow-ups
 
 - **Phase C**: ablation switch to force `q` uniform (no proxy) and
@@ -427,7 +552,9 @@ with no remaining hd95 trade-off.
   std significance on the test-set dice/hd95 (with and without
   `--postprocess-largest-cc`), given the Phase F/H win margins are based
   on a 6-case test split.
-- **Phase I** (optional): replace largest-CC with a size-threshold
-  connected-component filter (drop components below N voxels per class)
-  to avoid the Phase H bilateral-organ penalty on classes 9-11 while still
-  removing the small false-positive blobs.
+- **Phase I** (optional, likely subsumed by Phase J): replace largest-CC
+  with a size-threshold connected-component filter (drop components below
+  N voxels per class) to avoid the Phase H bilateral-organ penalty on
+  classes 9-11 while still removing the small false-positive blobs. If
+  Phase J's Dice term already suppresses raw FP blobs, LCC/size-threshold
+  post-processing may become unnecessary entirely.
