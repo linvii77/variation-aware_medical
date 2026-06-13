@@ -256,8 +256,51 @@ is now close to (Phase B2 final) or exceeds (Phase B2 peak) the old
 proxy_sigma_min=0.05)` is adopted as the new default for this
 mechanism going forward.
 
+### Phase F: Held-Out Test-Set Evaluation (full-volume, 9 cases)
+
+`tools/eval_medical_3d.py` was fixed to load checkpoints with
+`strict=False`: pre-refactor checkpoints store
+`cs_loss.representative_proxies` (a different-shaped, proven no-op
+parameter) instead of `cs_loss.proxy_dist`. Eval runs with
+`lambda_cs=0.0` and no targets, so `cs_loss` is never exercised --
+the mismatch is harmless for backbone-based dice/hd95.
+
+`best_dice.pth` from each of four 20000-iter formal runs was evaluated
+on `all-data/lists_Synapse_DHC/test_cases.txt` (9 held-out cases) with
+full-volume sliding-window inference (`eval_medical_3d.py` defaults):
+
+| Run | proxy机制 | lambda_cs | lambda_scdl | test mean_dice | test mean_hd95 |
+| --- | --- | --- | --- | --- | --- |
+| `formal_synapse_ce_20000_w0` | -- | 0.0 | 0.0 | 0.3742 | 31.30 |
+| `formal_synapse_combined_l05_20000_w0` | 旧(死) | 1.0 | 0.5 | 0.4409 | 20.02 |
+| Phase A2 (vapl) | 新 | 0.1 | 0.0 | 0.4230 | 46.56 |
+| Phase B2 (combined) | 新 | 0.1 | 0.5 | **0.4560** | 33.98 |
+
+**Phase B2 achieves the best test-set dice overall (0.4560), beating
+the old (dead-proxy) combined baseline by +0.0151 (+3.4% relative).**
+This resolves the val_patch ambiguity from the formal run above (0.2730
+vs 0.2825 @ step 20000): on the metric that actually matters (held-out
+test set, full-volume inference), the tuned new proxy mechanism wins.
+
+Per-class dice, Phase B2 vs old combined baseline: improvements on
+classes 2, 3, 4, 6, 7, 9, 11 (notably class7 +0.080, class9 +0.101);
+small regressions on classes 1, 8, 10. Classes 5/12/13 are 0.0 dice
+across *all four* runs -- likely absent/degenerate in this 9-case test
+split, not method-specific.
+
+**HD95 caveat**: mean_hd95 is worse for both new-proxy runs (A2: 46.56,
+B2: 33.98) than the old combined baseline (20.02). The dominant
+contributor for B2 is class1 hd95 (113.1 vs 7.5 for old combined) --
+with only 9 test cases, HD95 (sensitive to outliers) can be dominated
+by a single case with a small far-away false positive. A per-case
+breakdown is needed before drawing conclusions about boundary quality.
+
 ### Optional Follow-ups
 
+- **Phase G**: per-case dice/hd95 breakdown for Phase B2 vs old combined
+  on class1 (and other regressed classes), to determine whether the
+  hd95 regression is a systematic boundary-quality issue or a single
+  outlier case with a small far-away false positive.
 - **Phase C**: ablation switch to force `q` uniform (no proxy) and
   measure the dice delta directly, isolating the proxy's contribution
   to final segmentation accuracy (beyond `proxy_assignment_accuracy`).
@@ -265,9 +308,6 @@ mechanism going forward.
   cross-dataset generalization.
 - **Phase E**: re-run Phase B2 (`lambda_cs=0.1, lambda_scdl=0.5,
   proxy_sigma_min=0.05`) with 2 additional seeds (43, 44) for mean +/-
-  std significance, since its peak (0.2870@18000) already exceeds the
-  old combined baseline (0.2825) but its final-step value (0.2730) is
-  slightly below it -- seed variance may settle this.
-- **Phase F**: evaluate `best_dice.pth` (not just the final checkpoint)
-  on the held-out test split for both Phase A2 and Phase B2, since the
-  formal comparison above is based on `val_patch` at step 20000 only.
+  std significance on the test-set dice/hd95, given the Phase F win
+  margin (+3.4% dice) and hd95 regression are both based on a 9-case
+  test split.
