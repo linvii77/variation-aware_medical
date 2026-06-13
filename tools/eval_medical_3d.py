@@ -21,7 +21,7 @@ from vap_pidnet.data import (
     MedicalVolumeDataset,
 )
 from vap_pidnet.infer import sliding_window_logits_3d
-from vap_pidnet.metrics import DiceHD95
+from vap_pidnet.metrics import DiceHD95, keep_largest_connected_component
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-channels", type=int, default=16)
     parser.add_argument("--embedding-dim", type=int, default=256)
     parser.add_argument("--max-batches", type=int, default=None)
+    parser.add_argument("--postprocess-largest-cc", action="store_true")
     return parser.parse_args()
 
 
@@ -93,6 +94,7 @@ def main() -> None:
         stride=tuple(args.eval_stride),
         eval_mode=args.eval_mode,
         max_batches=args.max_batches,
+        postprocess_largest_cc=args.postprocess_largest_cc,
     )
     write_outputs(args, metrics)
     print(
@@ -130,6 +132,7 @@ def evaluate(
     stride: tuple[int, int, int],
     eval_mode: str,
     max_batches: int | None,
+    postprocess_largest_cc: bool = False,
 ) -> dict[str, torch.Tensor]:
     model.eval()
     metric = DiceHD95(num_classes=num_classes)
@@ -153,6 +156,13 @@ def evaluate(
         else:
             logits = model(images)["logits"]
             preds = logits.argmax(dim=1)
+        if postprocess_largest_cc:
+            preds_np = preds.detach().cpu().numpy()
+            for sample in range(preds_np.shape[0]):
+                preds_np[sample] = keep_largest_connected_component(
+                    preds_np[sample], num_classes
+                )
+            preds = torch.from_numpy(preds_np).to(preds.device)
         metric.update(preds, targets)
     return metric.compute()
 

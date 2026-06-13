@@ -142,3 +142,27 @@ def _mean_or_zero(values: list[float]) -> float:
     if not values:
         return 0.0
     return float(np.mean(values))
+
+
+def keep_largest_connected_component(
+    preds: np.ndarray,
+    num_classes: int,
+    include_background: bool = False,
+) -> np.ndarray:
+    """Zero out all but the largest connected component per foreground class.
+
+    ``preds`` is an integer array of class indices with shape ``[D, H, W]``.
+    """
+    class_start = 0 if include_background else 1
+    out = preds.copy()
+    for class_index in range(class_start, num_classes):
+        mask = preds == class_index
+        if not mask.any():
+            continue
+        labeled, num_features = ndimage.label(mask)
+        if num_features <= 1:
+            continue
+        sizes = ndimage.sum(mask, labeled, index=range(1, num_features + 1))
+        largest_label = int(np.argmax(sizes)) + 1
+        out[mask & (labeled != largest_label)] = 0
+    return out
