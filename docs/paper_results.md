@@ -254,12 +254,54 @@ classes is positive for B2 (Section 3) and roughly neutral for OldComb.
 
 ## Appendix: Class Index Reference
 
-The Synapse-DHC split uses the standard 13-organ BTCV/Synapse convention
-(background=0). The commonly used ordering in TransUNet/DHC-style papers
-is: 1=spleen, 2=right kidney, 3=left kidney, 4=gallbladder, 5=esophagus,
-6=liver, 7=stomach, 8=aorta, 9=IVC, 10=portal/splenic vein, 11=pancreas,
-12=right adrenal gland, 13=left adrenal gland. **This mapping was not
-verified against this repo's preprocessing script** -- confirm against
-the actual label-generation code before using organ names in the paper.
+The Synapse-DHC split (`all-data/lists_Synapse_DHC/split_summary.json`)
+follows DHC's `process_split_fully`/`process_split_semi`, which in turn
+follows the standard TransUNet/nnFormer/Swin-UNet 13-organ BTCV/Synapse
+convention (background=0):
+
+| class | organ | class | organ |
+| --- | --- | --- | --- |
+| 1 | spleen | 8 | aorta |
+| 2 | right kidney | 9 | inferior vena cava (IVC) |
+| 3 | left kidney | 10 | portal & splenic vein |
+| 4 | gallbladder | 11 | pancreas |
+| 5 | esophagus | 12 | right adrenal gland |
+| 6 | liver | 13 | left adrenal gland |
+| 7 | stomach | | |
+
+**Verified empirically** (no preprocessing script was found in this repo,
+so this mapping was cross-checked directly against the `.h5` label
+volumes for cases 0001, 0021, 0023): computed each class's voxel count and
+centroid along axis 0 (the body's left-right axis). The laterality and
+size pattern matches this convention exactly across all three cases:
+
+- class 6 (largest by far, 258k-386k voxels) and class 2 sit on one body
+  side (centroid_axis0 ~65-83) -- consistent with **liver** (largest
+  abdominal organ, right side) and **right kidney**.
+- class 1 (2nd-largest solid organ, 17k-69k voxels) and class 3 sit on the
+  opposite side (centroid_axis0 ~150-182) -- consistent with **spleen**
+  and **left kidney** (both left-sided).
+- class 7 (3rd-largest, 50k-104k voxels) is also on the spleen/left-kidney
+  side -- consistent with **stomach** (left side).
+- class 4, when present, sits on the liver side (centroid_axis0 ~68-85)
+  -- consistent with **gallbladder** (adjacent to the liver).
+- class 12 (smallest paired structure, 203-971 voxels) sits on the
+  liver/right-kidney side, class 13 (675-1208 voxels) sits on the
+  spleen/left-kidney side -- consistent with **right/left adrenal glands**
+  (each sits atop its corresponding kidney).
+- class 8 and class 9 are both long tubular structures spanning most of
+  the cranio-caudal axis, near the body midline -- consistent with
+  **aorta** (slightly left of midline) and **IVC** (slightly right of
+  midline, toward the liver side).
+- class 10 has the largest left-right bounding-box extent (87-129 voxels
+  in case 0001/0021) while spanning few cranio-caudal slices --
+  consistent with **portal & splenic vein** (connects the spleen side to
+  the liver/porta-hepatis side).
+- class 11 has a moderate left-right extent and sits near the midline --
+  consistent with **pancreas** (head on the right, tail extends toward
+  the spleen on the left).
+
 Classes 5/12/13 (esophagus, adrenal glands -- small/thin structures) being
-0.0 across all runs is consistent with this convention.
+0.0 dice across all evaluated checkpoints is consistent with this
+convention (these are the hardest/smallest classes in the standard
+Synapse-13 benchmark).
