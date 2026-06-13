@@ -177,10 +177,17 @@ def foreground_crop_starts(
     patch_size: tuple[int, int, int],
     margin: int = 4,
 ) -> list[int] | None:
-    foreground = np.argwhere(target > 0)
-    if foreground.size == 0:
+    classes = np.unique(target)
+    classes = classes[classes > 0]
+    if classes.size == 0:
         return None
 
+    # Pick a foreground class uniformly first, then a voxel of that class.
+    # This gives rare small-volume classes (e.g. esophagus, adrenal glands)
+    # the same chance of being the patch center as large organs (e.g.
+    # liver), instead of weighting by raw voxel count.
+    chosen_class = classes[random.randrange(len(classes))]
+    foreground = np.argwhere(target == chosen_class)
     center = foreground[random.randrange(len(foreground))]
     starts = []
     for axis, (coord, dim, size) in enumerate(zip(center, target.shape, patch_size)):

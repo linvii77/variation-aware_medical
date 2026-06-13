@@ -60,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-cs", type=float, default=None)
     parser.add_argument("--lambda-scdl", type=float, default=None)
     parser.add_argument("--proxy-sigma-min", type=float, default=None)
+    parser.add_argument("--lambda-dice", type=float, default=None)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--eval-mode", choices=["patch", "full"], default="patch")
     parser.add_argument("--eval-interval", type=int, default=500)
@@ -126,6 +127,7 @@ def main() -> None:
         embedding_dim=args.embedding_dim,
         lambda_cs=args.lambda_cs,
         lambda_scdl=args.lambda_scdl,
+        lambda_dice=args.lambda_dice,
         proxy_sigma_min=args.proxy_sigma_min,
     ).to(device)
     optimizer = torch.optim.AdamW(
@@ -180,6 +182,7 @@ def main() -> None:
                         f"logits={tuple(outputs['logits'].shape)}",
                         f"loss={loss.item():.4f}",
                         f"seg={losses['loss_seg'].item():.4f}",
+                        f"dice={losses['loss_dice'].item():.4f}",
                         f"cs={losses['loss_cs'].item():.4f}",
                         f"scdl={losses['loss_scdl'].item():.4f}",
                         f"hard={losses['hard_fraction'].item():.4f}",
@@ -200,6 +203,7 @@ def main() -> None:
                     "case_id": batch["case_id"][0],
                     "loss_total": loss.item(),
                     "loss_seg": losses["loss_seg"].item(),
+                    "loss_dice": losses["loss_dice"].item(),
                     "loss_cs": losses["loss_cs"].item(),
                     "loss_scdl": losses["loss_scdl"].item(),
                     "hard_fraction": losses["hard_fraction"].item(),
@@ -251,6 +255,7 @@ def main() -> None:
                     "case_id": "",
                     "loss_total": "",
                     "loss_seg": "",
+                    "loss_dice": "",
                     "loss_cs": "",
                     "loss_scdl": "",
                     "hard_fraction": "",
@@ -290,6 +295,8 @@ def fill_defaults(args: argparse.Namespace) -> None:
         args.lambda_scdl = default_lambda_scdl
     if args.proxy_sigma_min is None:
         args.proxy_sigma_min = 0.05
+    if args.lambda_dice is None:
+        args.lambda_dice = 0.5
 
     data_root = ROOT / "all-data"
     if args.dataset == "synapse":
@@ -335,6 +342,7 @@ def append_metrics(path: Path, row: dict[str, object]) -> None:
         "case_id",
         "loss_total",
         "loss_seg",
+        "loss_dice",
         "loss_cs",
         "loss_scdl",
         "hard_fraction",

@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .losses import soft_dice_loss
 from .models import PIDNet, SCDLVNet3D, pidnet_m, scdl_vnet_3d
 from .scdl import SemanticClassDistributionLoss
 from .vapl import CompositionalSimilarityLoss, ProjectionHead, SoftmaxScope
@@ -198,6 +199,7 @@ class VAPLSCDL3D(nn.Module):
         embedding_dim: int = 256,
         lambda_cs: float = 1.0,
         lambda_scdl: float = 0.0,
+        lambda_dice: float = 0.0,
         ignore_index: int = 255,
         num_variations: int = 5,
         lambda_var: float = 1.0,
@@ -212,6 +214,7 @@ class VAPLSCDL3D(nn.Module):
         self.num_classes = num_classes
         self.lambda_cs = lambda_cs
         self.lambda_scdl = lambda_scdl
+        self.lambda_dice = lambda_dice
         self.ignore_index = ignore_index
 
         self.backbone: SCDLVNet3D = scdl_vnet_3d(
@@ -281,11 +284,16 @@ class VAPLSCDL3D(nn.Module):
             return outputs
 
         targets_4d = self._targets_4d(targets)
-        loss_seg = F.cross_entropy(
+        loss_ce = F.cross_entropy(
             logits,
             targets_4d.long(),
             ignore_index=self.ignore_index,
         )
+        if self.lambda_dice > 0.0:
+            loss_dice = soft_dice_loss(logits, targets_4d, self.num_classes, self.ignore_index)
+        else:
+            loss_dice = logits.new_zeros(())
+        loss_seg = loss_ce + self.lambda_dice * loss_dice
 
         if self.lambda_cs > 0.0:
             if embeddings is None:
@@ -328,6 +336,8 @@ class VAPLSCDL3D(nn.Module):
         losses = {
             "loss_total": total_loss,
             "loss_seg": loss_seg,
+            "loss_ce": loss_ce,
+            "loss_dice": loss_dice,
             "loss_aux_p": logits.new_zeros(()),
             "loss_cs": loss_cs,
             "loss_scdl": loss_scdl,
@@ -368,6 +378,7 @@ def build_vapl_scdl_3d(
     embedding_dim: int = 256,
     lambda_cs: float = 1.0,
     lambda_scdl: float = 0.0,
+    lambda_dice: float = 0.0,
     ignore_index: int = 255,
     proxy_sigma_min: float = 0.05,
 ) -> VAPLSCDL3D:
@@ -380,6 +391,7 @@ def build_vapl_scdl_3d(
         embedding_dim=embedding_dim,
         lambda_cs=lambda_cs,
         lambda_scdl=lambda_scdl,
+        lambda_dice=lambda_dice,
         ignore_index=ignore_index,
         proxy_sigma_min=proxy_sigma_min,
     )
