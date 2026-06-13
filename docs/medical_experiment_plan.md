@@ -256,7 +256,7 @@ is now close to (Phase B2 final) or exceeds (Phase B2 peak) the old
 proxy_sigma_min=0.05)` is adopted as the new default for this
 mechanism going forward.
 
-### Phase F: Held-Out Test-Set Evaluation (full-volume, 9 cases)
+### Phase F: Held-Out Test-Set Evaluation (full-volume, 6 cases)
 
 `tools/eval_medical_3d.py` was fixed to load checkpoints with
 `strict=False`: pre-refactor checkpoints store
@@ -266,7 +266,8 @@ parameter) instead of `cs_loss.proxy_dist`. Eval runs with
 the mismatch is harmless for backbone-based dice/hd95.
 
 `best_dice.pth` from each of four 20000-iter formal runs was evaluated
-on `all-data/lists_Synapse_DHC/test_cases.txt` (9 held-out cases) with
+on `all-data/lists_Synapse_DHC/test_cases.txt` (6 held-out cases:
+case0001, case0004, case0023, case0026, case0032, case0036) with
 full-volume sliding-window inference (`eval_medical_3d.py` defaults):
 
 | Run | proxy机制 | lambda_cs | lambda_scdl | test mean_dice | test mean_hd95 |
@@ -285,22 +286,83 @@ test set, full-volume inference), the tuned new proxy mechanism wins.
 Per-class dice, Phase B2 vs old combined baseline: improvements on
 classes 2, 3, 4, 6, 7, 9, 11 (notably class7 +0.080, class9 +0.101);
 small regressions on classes 1, 8, 10. Classes 5/12/13 are 0.0 dice
-across *all four* runs -- likely absent/degenerate in this 9-case test
+across *all four* runs -- likely absent/degenerate in this 6-case test
 split, not method-specific.
 
 **HD95 caveat**: mean_hd95 is worse for both new-proxy runs (A2: 46.56,
 B2: 33.98) than the old combined baseline (20.02). The dominant
 contributor for B2 is class1 hd95 (113.1 vs 7.5 for old combined) --
-with only 9 test cases, HD95 (sensitive to outliers) can be dominated
-by a single case with a small far-away false positive. A per-case
-breakdown is needed before drawing conclusions about boundary quality.
+with only 6 test cases, HD95 (sensitive to outliers) could in principle
+be dominated by a single case with a small far-away false positive.
+See Phase G below for the per-case breakdown.
+
+### Phase G: Per-Case Dice/HD95 Breakdown (Phase B2 vs old combined)
+
+Each of the 6 held-out test cases was evaluated individually (single-case
+split files, full-volume sliding-window inference) for the old combined
+baseline (`formal_synapse_combined_l05_20000_w0`) and Phase B2
+(`formal_synapse_combined_proxydist_lcs0.1_sig0.05_l05_20000_w0`), using
+`best_dice.pth` from each.
+
+#### Per-case mean_dice / mean_hd95
+
+| case | old combined dice | B2 dice | delta | old combined hd95 | B2 hd95 | delta |
+| --- | --- | --- | --- | --- | --- | --- |
+| case0001 | 0.4452 | 0.4508 | +0.0056 | 23.34 | 28.58 | +5.24 |
+| case0004 | 0.4352 | 0.4561 | +0.0209 | 16.71 | 20.40 | +3.69 |
+| case0023 | 0.3383 | 0.3507 | +0.0124 | 12.96 | 50.92 | +37.96 |
+| case0026 | 0.4669 | 0.4932 | +0.0263 | 15.94 | 21.92 | +5.98 |
+| case0032 | 0.4897 | 0.5243 | +0.0346 | 18.15 | 24.18 | +6.03 |
+| case0036 | 0.4702 | 0.4609 | -0.0093 | 25.14 | 53.74 | +28.60 |
+
+**Dice**: B2 wins on 5/6 cases (only case0036 regresses, by -0.0093). The
+test-set dice win (+3.4% relative) is broadly distributed, not driven by a
+single case.
+
+**HD95**: B2 is *worse* on all 6/6 cases, by +3.7 to +38.0. This is a
+systematic regression, not a single-outlier artifact.
+
+#### Class1 dice / hd95 per case (the dominant hd95 contributor)
+
+| case | old combined dice1 | B2 dice1 | old combined hd95_1 | B2 hd95_1 |
+| --- | --- | --- | --- | --- |
+| case0001 | 0.818 | 0.834 | 7.1 | 119.4 |
+| case0004 | 0.931 | 0.876 | 1.7 | 107.4 |
+| case0023 | 0.598 | 0.688 | 7.8 | 119.5 |
+| case0026 | 0.841 | 0.793 | 6.1 | 95.6 |
+| case0032 | 0.795 | 0.714 | 10.0 | 139.4 |
+| case0036 | 0.838 | 0.737 | 12.1 | 97.4 |
+
+class1 dice is roughly comparable between the two runs (mean 0.804 ->
+0.774, a small regression), but **class1 hd95 jumps from 1.7-12.1 (old
+combined) to 95-140 (B2) in every single case** -- a ~10-20x increase,
+fully systematic across the test split. Since dice (volume-overlap based)
+is largely unaffected while hd95 (boundary-distance based) blows up, the
+pattern is consistent with B2 producing small, spatially-isolated
+false-positive blobs for class1 that sit far from the true organ in every
+volume, without materially changing the bulk overlap.
+
+class1 alone accounts for (113.1 - 7.5) / 13 ~= 8.1 of the 13.96-point
+overall mean_hd95 gap (33.98 vs 20.02), i.e. ~58%. The remaining gap is
+concentrated in case0023 and case0036: for B2, both cases additionally
+show hd95 > 95 for classes 3, 7, and 10 (vs <10, <10, and 0/83.3
+respectively for old combined), which is why these two cases have by far
+the largest per-case mean_hd95 (50.9 and 53.7).
+
+**Conclusion**: the Phase F HD95 regression is real and systematic, not a
+9-case (now known to be 6-case) outlier artifact. The tuned new proxy
+mechanism (`lambda_cs=0.1, lambda_scdl=0.5`) trades a small amount of
+boundary precision (hd95, especially class1) for a broadly-distributed
+dice improvement (+3.4%, 5/6 cases). This should be reported as a genuine
+trade-off / limitation alongside the dice win. A natural mitigation to
+consider (not yet tested) is a largest-connected-component post-processing
+step per class, which would likely remove the small far-away false
+positives driving the hd95 blow-up without affecting dice much -- this
+would isolate whether the regression is an artifact of scattered noise
+vs. a genuine shift in the learned boundary.
 
 ### Optional Follow-ups
 
-- **Phase G**: per-case dice/hd95 breakdown for Phase B2 vs old combined
-  on class1 (and other regressed classes), to determine whether the
-  hd95 regression is a systematic boundary-quality issue or a single
-  outlier case with a small far-away false positive.
 - **Phase C**: ablation switch to force `q` uniform (no proxy) and
   measure the dice delta directly, isolating the proxy's contribution
   to final segmentation accuracy (beyond `proxy_assignment_accuracy`).
@@ -309,5 +371,9 @@ breakdown is needed before drawing conclusions about boundary quality.
 - **Phase E**: re-run Phase B2 (`lambda_cs=0.1, lambda_scdl=0.5,
   proxy_sigma_min=0.05`) with 2 additional seeds (43, 44) for mean +/-
   std significance on the test-set dice/hd95, given the Phase F win
-  margin (+3.4% dice) and hd95 regression are both based on a 9-case
-  test split.
+  margin (+3.4% dice) and the Phase G hd95 trade-off are both based on a
+  6-case test split.
+- **Phase H** (optional, cheap): apply largest-connected-component
+  post-processing per class to B2's predictions and re-evaluate hd95, to
+  test the Phase G hypothesis that the regression is driven by small
+  far-away false-positive blobs rather than a genuine boundary shift.
