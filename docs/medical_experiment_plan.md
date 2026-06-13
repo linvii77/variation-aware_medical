@@ -415,7 +415,7 @@ better than the old (dead-proxy) combined baseline on *both* primary
 test-set metrics (dice 0.4597 vs 0.4329/0.4409, hd95 20.45 vs 19.94/20.02),
 with no remaining hd95 trade-off.
 
-### Phase J (Proposed, NOT YET EXECUTED): CE+Dice Composite Loss + Class-Balanced Foreground Sampling
+### Phase J (In Progress): CE+Dice Composite Loss + Class-Balanced Foreground Sampling
 
 Raised after Phase H: (1) B2's *raw* (pre-LCC) hd95 is much worse than
 OldComb (33.98 vs 20.02) -- relying on LCC post-processing alone to
@@ -539,6 +539,69 @@ split" claim in `paper_results.md` Sections 4/Appendix -- now falsified)
 4. After the formal reruns (if approved), update `paper_results.md` with
    the new headline numbers and re-evaluate whether `B2+LCC` is still
    needed, or whether the raw (pre-LCC) numbers now stand on their own.
+
+#### Pilot results and execution status
+
+Steps 1-2 executed: code committed (`2b4ee20`), smoke test passed
+(`loss_dice` present in `args.json`/`metrics.csv`), synthetic sampling
+test confirmed class-2 patch-center rate rose from ~0% to 52.9% under the
+new `foreground_crop_starts`. 3000-iter pilot launched at
+`outputs/pilot_synapse_combined_proxydist_lcs0.1_sig0.05_l05_dice05_3000`
+(B2 config + `--lambda-dice 0.5`, seed=42).
+
+- **val_patch dice @1000/2000/3000**: 0.0320 / 0.0362 / 0.0331, vs B2
+  reference 0.0302 / 0.0310 / 0.0389 -- ahead at 1000/2000, behind at
+  3000 (within normal early-training noise).
+- **Full-volume test-set diag @ step3000** (pilot vs B2-reference
+  checkpoint, both step 3000): mean_dice 0.0608 vs 0.0626, only class 6
+  (liver) non-zero for both (0.7903 vs 0.8140); classes 5/12/13 still 0
+  for both. Inconclusive -- step 3000 is too early for *any* config to
+  have learned anything beyond the dominant class.
+- **Extended to step 8000** (resumed from `checkpoint_003000.pth`,
+  mirroring the P1/P6 extension pattern from the Section 8 sweep).
+  val_patch dice @4000-8000: pilot 0.0645 / 0.1126 / 0.1238 / 0.1229 /
+  0.1454 vs B2 reference 0.0425 / 0.0597 / 0.0645 / 0.0767 / 0.0567 --
+  pilot pulls to ~2.5x the reference by step 8000.
+- **Full-volume test-set diag @ step8000**: pilot mean_dice=0.2041
+  (8/13 classes non-zero, including class8=0.552 and class10=0.107 which
+  are still 0 for the B2 reference at the same step) vs B2 reference
+  mean_dice=0.1005 (5/13 classes non-zero). mean_hd95 is higher for the
+  pilot (37.91 vs 28.13), likely a transient effect of more classes just
+  having come "online" with still-noisy boundaries (B2 reference itself
+  reaches hd95=33.98 by step 20000). Classes 5/12/13 still 0 for both at
+  step 8000 -- these are an order of magnitude smaller than class
+  8/10, plausibly need more steps.
+
+**Decision (user-approved 2026-06-14)**: criterion (b) is clearly met
+(pilot >> B2 reference from step 4000 on); criterion (a) has an indirect
+positive signal (faster activation of small classes generally) but
+classes 5/12/13 specifically remain unresolved at 8000 steps. Proceeding
+to the 20000-iter formal reruns for **B2, A2, CE** with `--lambda-dice
+0.5` (now also the CLI default) + the new sampling (now unconditional).
+
+**OldComb is excluded from the rerun.** Its checkpoints predate commit
+`9f010c1` ("Replace VAPL representative proxy with SCDL-style (mu,sigma)
+class proxy", 2026-06-12) -- i.e. OldComb was trained with the *old* dead
+proxy. The current code only has the new proxy, so `lambda_cs=1.0,
+lambda_scdl=0.5` + Phase J fix on current code would not reproduce
+"OldComb + fix" (and `lambda_cs=1.0` + new proxy is already a known-bad
+combination per the Section 8 sweep, which would confound the Dice/
+sampling effect). OldComb's existing numbers (dice=0.4409, hd95=20.02;
++LCC 0.4329/19.94) are kept as-is in `paper_results.md`; the revised
+table will compare CE/A2/B2 vs CE+PhaseJ/A2+PhaseJ/B2+PhaseJ, with OldComb
+retained as a separate historical-baseline row.
+
+**Launched 2026-06-14** (chained, serial, single GPU, ~2.5-3h total):
+
+1. `outputs/pilot_synapse_combined_proxydist_lcs0.1_sig0.05_l05_dice05_3000`
+   -- B2+PhaseJ: resumed from `checkpoint_008000.pth`, continuing to
+   `--max-iters 20000` (12000 more steps, in place, same dir).
+2. `outputs/formal_synapse_vapl_proxydist_lcs0.1_sig0.05_phaseJ_20000_w0`
+   -- A2+PhaseJ: fresh 20000-iter run, `mode=vapl, lambda_cs=0.1,
+   proxy_sigma_min=0.05, lambda_scdl=0.0, lambda_dice=0.5`.
+3. `outputs/formal_synapse_ce_phaseJ_20000_w0` -- CE+PhaseJ: fresh
+   20000-iter run, `mode=ce, lambda_dice=0.5` (lambda_cs=lambda_scdl=0.0
+   by mode default).
 
 ### Optional Follow-ups
 
